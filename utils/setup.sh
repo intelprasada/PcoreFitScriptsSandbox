@@ -113,7 +113,27 @@ if [[ ${#CONFLICTS[@]} -gt 0 ]]; then
     echo
 fi
 
-# ─── Step 4: Add source block (once) ─────────────────────────────────────────
+# ─── Step 3: Check and fix exec permissions on bin/ tools ────────────────────
+echo
+info "Checking exec permissions on bin/ tools ..."
+FIXED=0
+MISSING=0
+for f in "${REPO_ROOT}/bin"/*; do
+    [[ -f "$f" ]] || continue
+    if [[ ! -x "$f" ]]; then
+        chmod +x "$f"
+        ok "Fixed: $(basename "$f") — set executable"
+        (( FIXED++ )) || true
+    else
+        (( MISSING++ )) || true
+    fi
+done
+if [[ $FIXED -eq 0 ]]; then
+    skip "All bin/ tools already have exec permissions."
+fi
+echo
+
+
 MARKER="CORE_TOOLS_DIR"   # present in both csh and bash blocks
 
 if grep -q "${MARKER}" "${ALIASES_FILE}" 2>/dev/null; then
