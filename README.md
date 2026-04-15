@@ -8,7 +8,7 @@ A curated collection of lightweight command-line tools for the PcoreFit pipeline
 
 ```bash
 # Clone and navigate
-git clone https://github.com/intelprasada/PcoreFitScriptsSandbox.git core-tools
+git clone https://github.com/intelprasada/nsaddaga.PcoreFitScripts.git core-tools
 cd core-tools
 
 # Add bin/ to your PATH
