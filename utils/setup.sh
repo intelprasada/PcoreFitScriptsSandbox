@@ -160,7 +160,12 @@ _reqs_importable() {
 
 echo
 info "Installing Python dependencies for all tools ..."
-PY3="$(command -v python3 2>/dev/null || true)"
+# Prefer Intel's Python (has access to internal PyPI mirrors); fall back to PATH python3
+if [[ -x "/usr/intel/bin/python3" ]]; then
+    PY3="/usr/intel/bin/python3"
+else
+    PY3="$(command -v python3 2>/dev/null || true)"
+fi
 if [[ -z "$PY3" ]]; then
     warn "python3 not found — skipping dependency install."
 else
