@@ -199,8 +199,9 @@ Click anywhere on a card (the small **⋮⋮** handle in the top-right is for
 dragging). A popover opens with editable **status / priority / ETA / owners
 / features / notes** fields. Each save fires one `PATCH /api/tasks/{id}`
 sending only the fields you changed; ownership rules are enforced server-
-side, so members get a friendly *"can't edit — not your task"* message
-when they try to edit a task they don't own.
+side. Members and outside owners get a precise message describing what's
+actually wrong (no project access, not the task's owner, etc.) instead of
+a generic 403.
 
 The **Notes** textarea writes free-form per-task notes as `#note <line>`
 continuation entries indented under the task in the markdown file (one
@@ -372,11 +373,30 @@ Guardrails enforced by the backend:
 Each project has its own member list. Two project roles:
 
 * **manager** — full CRUD on the project's notes and tasks.
-* **member** — can only edit tasks where they appear in `@user` / `#owner`.
+* **member** — can edit (per-task PATCH) any task where they appear in
+  `@user` / `#owner`. They cannot edit other members' tasks, rename notes,
+  or rewrite the whole markdown file.
 
 Admins are implicitly managers of every project.
 
-Manage members from the Sidebar's project right-click menu, or via the API:
+> **Owners can edit their own task even without project membership.** If a
+> task lists `@nina` as an owner but Nina isn't a `ProjectMember`, she can
+> still PATCH that one task (status, notes, ETA, etc.). She just won't see
+> the project in her Sidebar — she'd open the task from **My Tasks** /
+> Agenda / direct link. Use the modal below to formally add her if you
+> want her to see and navigate the whole project.
+
+Manage members from the Sidebar: right-click any project and pick
+**Manage members…** (visible to managers/admins). The modal lets you:
+
+* see all current members with their role,
+* toggle each member's role between *member* and *manager* via the
+  inline dropdown,
+* remove a member,
+* add a new member — the username field autocompletes from the existing
+  user list (case-sensitive — match the casing used in `@mentions`).
+
+Same operations are available via the API:
 
 ```sh
 # add bob as a member
@@ -396,7 +416,16 @@ curl -u admin:admin -X DELETE \
 
 When bob logs in he sees only `acme` in his Sidebar. He can drag his own
 tasks across columns; if he tries to drag someone else's task the API
-returns `403 members can only edit their own tasks`.
+returns a 403 with a precise reason:
+
+| Situation                                                    | Error detail                            |
+| ------------------------------------------------------------ | --------------------------------------- |
+| Not a project member **and** not listed as an `@owner`       | `no access to project`                  |
+| Member of the project, but not an owner of *this* task       | `members can only edit their own tasks` |
+| Whole-file `PUT /api/notes` while not a manager              | `manager role required`                 |
+
+The inline edit popover surfaces these directly so users know whether to
+ask for project membership or for ownership on a specific task.
 
 ---
 
