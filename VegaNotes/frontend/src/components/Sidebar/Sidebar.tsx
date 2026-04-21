@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { api, type TreeNode } from "../../api/client";
+import { ManageMembersModal } from "./ManageMembersModal";
 
 interface Props {
   selectedPath: string;
@@ -41,6 +42,7 @@ export function Sidebar({ selectedPath, onSelect, onAfterDelete }: Props) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [newNoteFor, setNewNoteFor] = useState<string | null>(null);
   const [newNoteName, setNewNoteName] = useState("");
+  const [manageMembersFor, setManageMembersFor] = useState<string | null>(null);
 
   // Dismiss the context menu on any outside click / Escape.
   useEffect(() => {
@@ -246,6 +248,10 @@ export function Sidebar({ selectedPath, onSelect, onAfterDelete }: Props) {
               setNewNoteName("");
               setMenu(null);
             },
+            onManageMembers: (project) => {
+              setManageMembersFor(project);
+              setMenu(null);
+            },
             onDeleteProject: (project) => {
               if (
                 window.confirm(
@@ -267,6 +273,13 @@ export function Sidebar({ selectedPath, onSelect, onAfterDelete }: Props) {
           })}
         />
       )}
+
+      {manageMembersFor && (
+        <ManageMembersModal
+          project={manageMembersFor}
+          onClose={() => setManageMembersFor(null)}
+        />
+      )}
     </aside>
   );
 }
@@ -281,6 +294,7 @@ function buildMenuItems(
   target: MenuKind,
   cb: {
     onNewNote: (project: string) => void;
+    onManageMembers: (project: string) => void;
     onDeleteProject: (project: string) => void;
     onDeleteNote: (id: number | null, path: string) => void;
   },
@@ -290,6 +304,10 @@ function buildMenuItems(
       { label: "New note in project", onClick: () => cb.onNewNote(target.project) },
     ];
     if (target.role === "manager") {
+      items.push({
+        label: "Manage members…",
+        onClick: () => cb.onManageMembers(target.project),
+      });
       items.push({
         label: "Delete project…",
         danger: true,

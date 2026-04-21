@@ -56,8 +56,9 @@ export function AdminPanel() {
         <h2 className="text-xl font-semibold">Users</h2>
         <p className="text-sm text-slate-500">
           Logged in as <code>{me?.name ?? "…"}</code>{me?.is_admin ? " (admin)" : ""}.
-          New users get a password here, then can be assigned to projects from
-          the Sidebar's project context menu.
+          New users get a password here, then can be added to projects by
+          right-clicking a project in the Sidebar and choosing
+          <em> Manage members…</em> (managers/admin only).
         </p>
       </div>
 

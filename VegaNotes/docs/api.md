@@ -60,6 +60,12 @@ from the last remaining admin.
   eta_range/status_breakdown/priority_breakdown).
 - `GET /api/tasks/{id}`
 - `PATCH /api/tasks/{id}` — convenience attribute update (round-tripped to md).
+  Body fields: `status`, `priority`, `eta`, `owners`, `features`, `notes`.
+  Authorization: managers and admins always allowed; otherwise the caller
+  must be listed as an `@owner` on this task (project membership not
+  required for owner-only edits). Returns `403` with one of these `detail`
+  strings on failure: `no access to project`,
+  `members can only edit their own tasks`, `manager role required`.
 
 ### Agenda
 - `GET /api/agenda?owner=alice&days=7` — grouped by day, sorted by `eta`+`priority`.
