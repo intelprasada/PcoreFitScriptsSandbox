@@ -33,6 +33,12 @@ def init_db() -> None:
         if "kind" not in existing:
             conn.execute(text("ALTER TABLE task ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_kind ON task(kind)"))
+        if "task_uuid" not in existing:
+            conn.execute(text("ALTER TABLE task ADD COLUMN task_uuid TEXT"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_task_task_uuid "
+                "ON task(task_uuid) WHERE task_uuid IS NOT NULL"
+            ))
         # User: pass_hash + is_admin added when multi-user auth landed.
         user_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(user)")).fetchall()}
         if user_cols and "pass_hash" not in user_cols:

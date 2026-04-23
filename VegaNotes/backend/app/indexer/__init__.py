@@ -93,6 +93,9 @@ def reindex_file(path: Path, session: Session) -> Note:
             line=pt["line"],
             indent=pt["indent"],
             kind=pt.get("kind", "task"),
+            # Promote #id T-XXXXXX to a first-class column so it can be
+            # used as a stable external reference (survives title renames).
+            task_uuid=pt["attrs"].get("id") or None,
         )
         session.add(t)
         session.flush()
@@ -104,8 +107,11 @@ def reindex_file(path: Path, session: Session) -> Note:
         if pt["parent_slug"] and pt["parent_slug"] in slug_to_id:
             t.parent_task_id = slug_to_id[pt["parent_slug"]]
 
-        # Attributes
+        # Attributes — skip "id": it is stored as Task.task_uuid, not a
+        # user-visible attribute, so we don't create a TaskAttr row for it.
         for key, val in pt["attrs"].items():
+            if key == "id":
+                continue
             values = val if isinstance(val, list) else [val]
             norms = pt["attrs_norm"].get(key)
             norms_list = norms if isinstance(norms, list) else [norms] * len(values)

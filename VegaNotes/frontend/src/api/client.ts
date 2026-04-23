@@ -3,6 +3,7 @@
 
 export interface ChildTask {
   id: number;
+  task_uuid: string | null;
   slug: string;
   title: string;
   status: string;
@@ -13,6 +14,7 @@ export interface ChildTask {
 
 export interface Task {
   id: number;
+  task_uuid: string | null;
   slug: string;
   title: string;
   status: string;
@@ -156,8 +158,8 @@ export const api = {
   features: () => req<string[]>("/features"),
   featureTasks: (name: string) =>
     req<{ feature: string; tasks: Task[]; aggregations: any }>(`/features/${encodeURIComponent(name)}/tasks`),
-  cardLinks: (id: number) =>
-    req<{ task_id: number; slug: string; links: { other_slug: string; kind: string; direction: "in" | "out" }[] }>(`/cards/${id}/links`),
+  cardLinks: (ref: number | string) =>
+    req<{ task_id: number; task_uuid: string | null; slug: string; links: { other_slug: string; kind: string; direction: "in" | "out" }[] }>(`/cards/${ref}/links`),
 
   projects: () => req<ProjectInfo[]>("/projects"),
   createProject: (name: string) =>
