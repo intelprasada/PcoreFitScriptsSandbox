@@ -92,6 +92,7 @@ def _task_to_dict(s: Session, t: Task, *, include_children: bool = False) -> dic
             attr_map[a.key] = a.value
     out: dict[str, Any] = {
         "id": t.id,
+        "task_uuid": t.task_uuid,
         "slug": t.slug,
         "title": t.title,
         "status": t.status,
@@ -114,6 +115,7 @@ def _task_to_dict(s: Session, t: Task, *, include_children: bool = False) -> dic
         out["children"] = [
             {
                 "id": c.id,
+                "task_uuid": c.task_uuid,
                 "slug": c.slug,
                 "title": c.title,
                 "status": c.status,
@@ -133,6 +135,27 @@ def _task_to_dict(s: Session, t: Task, *, include_children: bool = False) -> dic
 
 def _split(csv: Optional[str]) -> list[str]:
     return [x.strip() for x in csv.split(",")] if csv else []
+
+
+import re as _re
+_UUID_RE = _re.compile(r"^T-[0-9A-Z]{6,}$")
+
+
+def _resolve_task(ref: str, s: Session) -> Task:
+    """Resolve a task by int PK or by T-XXXXXX uuid string.
+
+    Raises HTTPException(404) if not found.
+    """
+    if _UUID_RE.match(ref):
+        t = s.exec(select(Task).where(Task.task_uuid == ref)).first()
+    else:
+        try:
+            t = s.get(Task, int(ref))
+        except (ValueError, TypeError):
+            t = None
+    if t is None:
+        raise HTTPException(404, f"task '{ref}' not found")
+    return t
 
 
 # ---------- notes -----------------------------------------------------------
@@ -528,16 +551,15 @@ def feature_tasks(name: str, s: Session = Depends(get_session)) -> dict[str, Any
 
 # ---------- cards / bidirectional links ------------------------------------
 
-@router.get("/cards/{task_id}/links")
-def card_links(task_id: int, s: Session = Depends(get_session)) -> dict[str, Any]:
-    t = s.get(Task, task_id)
-    if not t:
-        raise HTTPException(404, "task not found")
+@router.get("/cards/{task_ref}/links")
+def card_links(task_ref: str, s: Session = Depends(get_session)) -> dict[str, Any]:
+    t = _resolve_task(task_ref, s)
     rows = s.exec(text("""
         SELECT other_slug, kind, direction FROM links_bidir WHERE task_id = :tid
-    """).bindparams(tid=task_id)).all()
+    """).bindparams(tid=t.id)).all()
     return {
-        "task_id": task_id,
+        "task_id": t.id,
+        "task_uuid": t.task_uuid,
         "slug": t.slug,
         "links": [{"other_slug": r[0], "kind": r[1], "direction": r[2]} for r in rows],
     }
@@ -784,16 +806,15 @@ class TaskPatch(BaseModel):
     notes: Optional[str] = None
 
 
-@router.patch("/tasks/{task_id}")
+@router.patch("/tasks/{task_ref}")
 def patch_task(
-    task_id: int,
+    task_ref: str,
     body: TaskPatch,
     s: Session = Depends(get_session),
     user: str = Depends(require_user),
 ) -> dict[str, Any]:
-    t = s.get(Task, task_id)
-    if not t:
-        raise HTTPException(404, "task not found")
+    t = _resolve_task(task_ref, s)
+    task_id = t.id
     note = s.get(Note, t.note_id)
     if not note:
         raise HTTPException(404, "note not found")

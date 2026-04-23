@@ -22,6 +22,10 @@ class Task(SQLModel, table=True):
     note_id: int = Field(foreign_key="note.id", index=True)
     parent_task_id: Optional[int] = Field(default=None, foreign_key="task.id", index=True)
     slug: str = Field(index=True)
+    # Stable identity minted once by stamp_task_ids and embedded in the .md
+    # file as "#id T-XXXXXX". Survives title renames and file moves.
+    # Nullable: tasks that haven't been stamped yet won't have one.
+    task_uuid: Optional[str] = Field(default=None, index=True, unique=True)
     title: str = ""
     status: str = Field(default="todo", index=True)
     line: int = 0
