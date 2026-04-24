@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 from ..auth import hash_password, require_admin, require_user
 from ..config import settings
 from ..db import get_session
-from ..indexer import reindex_all, reindex_file, remove_path
+from ..indexer import reindex_file, remove_path
 from ..markdown_ops import (
     inject_missing_ids, replace_attr, replace_multi_attr, replace_notes,
     append_note,
@@ -771,18 +771,6 @@ def list_members(
     return [{"user_name": r.user_name, "role": r.role} for r in rows]
 
 
-def _manager_count(s: Session, project: str) -> int:
-    """Return number of explicit manager rows for *project*."""
-    return len(
-        s.exec(
-            select(ProjectMember).where(
-                ProjectMember.project_name == project,
-                ProjectMember.role == "manager",
-            )
-        ).all()
-    )
-
-
 @router.put("/projects/{project}/members")
 def upsert_member(
     project: str,
@@ -799,13 +787,6 @@ def upsert_member(
             ProjectMember.user_name == body.user_name,
         )
     ).first()
-    # Last-manager guard: block demotion if it would leave zero managers.
-    if existing and existing.role == "manager" and body.role == "member":
-        if _manager_count(s, project) <= 1:
-            raise HTTPException(
-                400,
-                "Cannot demote the last manager. Promote another member to manager first.",
-            )
     if existing:
         existing.role = body.role
     else:
@@ -828,13 +809,6 @@ def remove_member(
             ProjectMember.user_name == user_name,
         )
     ).first()
-    # Last-manager guard: block removal if it would leave zero managers.
-    if existing and existing.role == "manager":
-        if _manager_count(s, project) <= 1:
-            raise HTTPException(
-                400,
-                "Cannot remove the last manager. Promote another member to manager first.",
-            )
     if existing:
         s.delete(existing)
         s.commit()
@@ -857,17 +831,6 @@ class TaskPatch(BaseModel):
     # is not provided. Empty string clears the block. Kept for backwards
     # compat but discouraged because it destroys history (see issue #53).
     notes: Optional[str] = None
-
-
-@router.get("/tasks/{task_ref}")
-def get_task(
-    task_ref: str,
-    s: Session = Depends(get_session),
-    include_children: bool = False,
-) -> dict[str, Any]:
-    """Fetch a single task by integer PK or `T-XXXXXX` uuid ref."""
-    t = _resolve_task(task_ref, s)
-    return _task_to_dict(s, t, include_children=include_children)
 
 
 @router.patch("/tasks/{task_ref}")
@@ -1080,13 +1043,3 @@ def search(q: str, s: Session = Depends(get_session)) -> list[dict[str, Any]]:
         LIMIT 50
     """).bindparams(q=q)).all()
     return [{"id": r[0], "path": r[1], "title": r[2]} for r in rows]
-
-
-@router.post("/admin/reindex", status_code=200)
-def admin_reindex(
-    s: Session = Depends(get_session),
-    _admin: str = Depends(require_admin),
-) -> dict[str, Any]:
-    """Re-scan all notes on disk, update the index, and auto-bootstrap orphan projects."""
-    n = reindex_all(s)
-    return {"status": "ok", "files_indexed": n}
