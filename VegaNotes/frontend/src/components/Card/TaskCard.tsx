@@ -4,8 +4,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type ChildTask, type Task } from "../../api/client";
 import { formatIntelWw } from "@veganotes/parser";
 import { useFontScale, FONT_SCALE_MAP } from "../../store/fontScale";
+import { QuickChips } from "../Tasks/QuickChips";
 
-interface Props { task: Task; onOpen?: (t: Task) => void; }
+interface Props { task: Task; onOpen?: (t: Task) => void; canWrite?: boolean; }
 
 const PRIO_COLOR: Record<string, string> = {
   P0: "border-l-rose-500", P1: "border-l-orange-500",
@@ -46,7 +47,7 @@ function UuidChip({ uuid }: { uuid: string }) {
   );
 }
 
-export function TaskCard({ task, onOpen }: Props) {
+export function TaskCard({ task, onOpen, canWrite = true }: Props) {
   const prio = (task.attrs.priority as string) ?? "";
   const accent = PRIO_COLOR[prio] ?? "border-l-slate-300";
   const ars = (task.children ?? []).filter((c) => c.kind === "ar");
@@ -73,15 +74,12 @@ export function TaskCard({ task, onOpen }: Props) {
       className={`card border-l-4 ${accent} cursor-pointer`}>
       <div className="flex items-start justify-between gap-2">
         <div className={`font-medium ${fs.title}`}>{task.title}</div>
-        {task.eta && <span className="chip chip-eta" title={task.eta}>{etaLabel(task.eta)}</span>}
       </div>
       <div className="mt-2 flex flex-wrap gap-1">
         {task.task_uuid && <UuidChip uuid={task.task_uuid} />}
-        {prio && <span className="chip chip-priority">{prio}</span>}
-        {task.owners.map((o) => <span key={o} className="chip chip-owner">@{o}</span>)}
+        <QuickChips task={task} canWrite={canWrite} />
         {task.projects.map((p) => <span key={p} className="chip chip-project">#{p}</span>)}
         {task.features.map((f) => <span key={f} className="chip chip-feature">★{f}</span>)}
-        {task.status !== "todo" && <span className="chip chip-status">{task.status}</span>}
       </div>
 
       {ars.length > 0 && (
