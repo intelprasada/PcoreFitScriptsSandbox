@@ -19,6 +19,7 @@ from ..markdown_ops import (
     inject_missing_ids, replace_attr, replace_multi_attr, replace_notes,
     append_note,
     remove_attr, roll_to_next_week, update_task_status,
+    find_ref_row_lines, patch_ref_rows,
 )
 from ..models import (
     Feature, Link, Note, Project, ProjectMember, Task, TaskAttr, TaskFeature,
@@ -954,6 +955,50 @@ def patch_task(
                 )
         _safe_write_unlocked(full, md, notes_dir=settings.notes_dir)
     reindex_file(full, s)
+
+    # ── Propagate to all ref-row files ────────────────────────────────────
+    # Any .md file that references this task via `#task T-XXXX` / `#AR T-XXXX`
+    # needs the same attribute mutations applied to those ref rows.  Without
+    # this, the next reindex of a referencing weekly note would push its
+    # stale `#status` override back into the SQLite index, silently clobbering
+    # the PATCH we just made (see issue #92).
+    ref_id = t.task_uuid
+    if ref_id:
+        ref_patch: dict = {}
+        if body.status is not None:
+            ref_patch["status"] = body.status
+        if body.priority is not None:
+            ref_patch["priority"] = body.priority
+        if body.eta is not None:
+            ref_patch["eta"] = body.eta
+        if body.owners is not None:
+            ref_patch["owners"] = [o.strip().lstrip("@") for o in body.owners if o and o.strip()]
+        if body.features is not None:
+            ref_patch["features"] = [f.strip() for f in body.features if f and f.strip()]
+
+        if ref_patch:
+            # Pre-filter: only notes whose cached body contains the ref_id text.
+            # This is a cheap LIKE scan; false positives are eliminated by
+            # find_ref_row_lines() inside patch_ref_rows().
+            from sqlmodel import col as _col
+            candidate_notes = s.exec(
+                select(Note)
+                .where(_col(Note.body_md).contains(ref_id))
+                .where(Note.id != note.id)   # canonical file already written
+            ).all()
+
+            for ref_note in candidate_notes:
+                ref_full = settings.notes_dir / ref_note.path
+                ref_changed = False
+                with with_file_lock(ref_full):
+                    if ref_full.exists():
+                        ref_disk_md = ref_full.read_text(encoding="utf-8")
+                        new_ref_md, ref_changed = patch_ref_rows(ref_disk_md, ref_id, ref_patch)
+                        if ref_changed:
+                            _safe_write_unlocked(ref_full, new_ref_md, notes_dir=settings.notes_dir)
+                if ref_changed:
+                    reindex_file(ref_full, s)
+
     refreshed = s.get(Task, task_id)
     return _task_to_dict(s, refreshed) if refreshed else {"ok": True}
 

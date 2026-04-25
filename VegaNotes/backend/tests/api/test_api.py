@@ -252,3 +252,67 @@ def test_admin_can_reset_any_password(client):
     r = client.get("/api/me", headers={"Authorization": new_auth})
     assert r.status_code == 200
     assert r.json()["name"] == "reset-target"
+
+
+# ---------------------------------------------------------------------------
+# Ref-row propagation (#92)
+# ---------------------------------------------------------------------------
+
+def test_patch_propagates_to_ref_rows(client):
+    """PATCH /tasks/{id} must update #task T-XXXX ref rows in other files too."""
+    # 1. Create the canonical note with a stamped task.
+    canonical_md = (
+        "# Sprint\n"
+        "- !task #id T-PROP01 Fix cache #status todo @alice\n"
+    )
+    r = client.put(
+        "/api/notes",
+        json={"path": "canonical-prop.md", "body_md": canonical_md},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 200, r.text
+    canonical_note_id = r.json()["id"]
+
+    # 2. Create a weekly note that references the task with override attrs.
+    ref_md = (
+        "# Weekly\n"
+        "- #task T-PROP01 Fix cache #status todo @alice\n"
+        "- #task T-PROP01 Fix cache copy two #status todo\n"
+    )
+    r = client.put(
+        "/api/notes",
+        json={"path": "weekly-prop.md", "body_md": ref_md},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 200, r.text
+    ref_note_id = r.json()["id"]
+
+    # 3. Resolve the task ID from the index.
+    r = client.get("/api/tasks?q=Fix+cache", headers={"Authorization": AUTH})
+    tasks = r.json()["tasks"]
+    task = next(t for t in tasks if t.get("task_uuid") == "T-PROP01")
+    task_id = task["id"]
+
+    # 4. PATCH status + eta.
+    r = client.patch(
+        f"/api/tasks/{task_id}",
+        json={"status": "done", "eta": "2026-W20"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "done"
+
+    # 5. The canonical note must reflect the patch.
+    r = client.get(f"/api/notes/{canonical_note_id}", headers={"Authorization": AUTH})
+    canonical_body = r.json()["body_md"]
+    assert "#status done" in canonical_body
+    assert "#eta 2026-W20" in canonical_body
+
+    # 6. The weekly (ref-row) note must also be updated on disk.
+    r = client.get(f"/api/notes/{ref_note_id}", headers={"Authorization": AUTH})
+    ref_body = r.json()["body_md"]
+    # Both ref rows updated.
+    assert ref_body.count("#status done") == 2
+    assert ref_body.count("#eta 2026-W20") == 2
+    # Old status gone.
+    assert "#status todo" not in ref_body
