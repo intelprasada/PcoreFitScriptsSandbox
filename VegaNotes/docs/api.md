@@ -54,11 +54,22 @@ from the last remaining admin.
 
 ### Tasks
 - `GET /api/tasks` — composable filters:
-  `owner`, `project`, `feature`, `priority`, `status`, `eta_before`, `eta_after`,
-  `hide_done`, `q` (FTS), `limit`, `offset`. Multi-value: comma-separated.
-  Response includes the **aggregation envelope** (owners/projects/features/
-  eta_range/status_breakdown/priority_breakdown).
-- `GET /api/tasks/{id}`
+  - **Fixed columns** (comma-separated for OR): `owner`, `project`,
+    `feature`, `priority`, `status`, `eta_before`, `eta_after`,
+    `hide_done`, `q` (FTS), `kind`.
+  - **Negation**: `not_owner`, `not_project`, `not_feature`,
+    `not_status`, `not_priority`.
+  - **Generic attribute filter** (issue #38 follow-up): repeatable
+    `attr=key:op:value`. Operators: `eq`, `ne`, `in`, `nin`, `gte`,
+    `lte`, `gt`, `lt`, `like`, `exists`, `nexists`. `in`/`nin` use a
+    comma-separated value list. Range ops (`gte`/`lte`/`gt`/`lt`) are
+    only valid on keys with `value_norm` populated (today: `eta`,
+    `priority`); other keys return `400`.
+  - **Sort**: `sort=field[:asc|desc][,field2[:dir]…]`. Allowed fields:
+    `eta`, `priority`, `created_at`, `updated_at`, `title`, `status`.
+  - **Pagination**: `limit` (1–2000) and `offset`. Response always
+    includes `total` alongside `tasks` + `aggregations`.
+- `GET /api/tasks/{id}` — fetch by integer PK or `T-XXXXXX` ref.
 - `PATCH /api/tasks/{id}` — convenience attribute update (round-tripped to md).
   Body fields: `status`, `priority`, `eta`, `owners`, `features`, `notes`.
   Authorization: managers and admins always allowed; otherwise the caller
@@ -66,6 +77,16 @@ from the last remaining admin.
   required for owner-only edits). Returns `403` with one of these `detail`
   strings on failure: `no access to project`,
   `members can only edit their own tasks`, `manager role required`.
+
+### Attributes
+- `GET /api/attrs` — autocomplete feed for arbitrary `#tag` keys. Returns
+  `[{key, count, sample_values: string[]}]`, sorted by `count desc`.
+
+### Saved views (per-user)
+- `GET /api/me/views` — returns the caller's saved chip-bar views as
+  `{ name: string[] }` (each value is a list of DSL clauses).
+- `PUT /api/me/views` — replace the entire saved-views map (PUT
+  semantics, no PATCH). Body is the same `{ name: string[] }` shape.
 
 ### Agenda
 - `GET /api/agenda?owner=alice&days=7` — grouped by day, sorted by `eta`+`priority`.

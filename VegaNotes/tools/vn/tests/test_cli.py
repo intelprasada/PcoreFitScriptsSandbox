@@ -129,6 +129,113 @@ def test_list_filters_passed_through(fake_client):
     assert params["hide_done"] is True
 
 
+def test_list_where_compiles_to_wire_params(fake_client):
+    fake_client.responses[("GET", "/api/tasks")] = {"tasks": []}
+    cli.main([
+        "list",
+        "-w", "owner=alice",
+        "-w", "@area=fit-val",
+        "-w", "eta>=ww18",
+        "-w", "project!=internal",
+        "--sort", "eta:desc",
+    ])
+    _, _, params, _ = fake_client.calls[-1]
+    assert params["owner"] == "alice"
+    assert params["not_project"] == "internal"
+    assert params["eta_after"] == "ww18"
+    assert params["attr"] == "area:eq:fit-val"
+    assert params["sort"] == "eta:desc"
+
+
+def test_list_multiple_attrs_become_repeated_param(fake_client):
+    fake_client.responses[("GET", "/api/tasks")] = {"tasks": []}
+    cli.main(["list", "-w", "@area=a", "-w", "@area=b", "-w", "@risk=high"])
+    _, _, params, _ = fake_client.calls[-1]
+    assert isinstance(params["attr"], list)
+    assert "area:eq:a" in params["attr"]
+    assert "area:eq:b" in params["attr"]
+    assert "risk:eq:high" in params["attr"]
+
+
+def test_query_alias_is_list(fake_client):
+    fake_client.responses[("GET", "/api/tasks")] = {"tasks": []}
+    cli.main(["query", "-w", "owner=alice"])
+    _, path, params, _ = fake_client.calls[-1]
+    assert path == "/api/tasks" and params["owner"] == "alice"
+
+
+def test_list_bad_where_returns_2(fake_client, capsys):
+    rc = cli.main(["list", "-w", "garbage"])
+    assert rc == 2
+    assert "bad --where" in capsys.readouterr().err
+
+
+def test_list_format_csv(fake_client, capsys):
+    fake_client.responses[("GET", "/api/tasks")] = {
+        "tasks": [
+            {"id": 1, "task_uuid": "T-001", "title": "Hi",
+             "status": "todo", "owners": ["a"], "attrs": {"priority": "P1"}},
+        ]
+    }
+    cli.main(["list", "--format", "csv", "--columns", "id,priority,title"])
+    out = capsys.readouterr().out
+    lines = out.strip().splitlines()
+    assert lines[0] == "id,priority,title"
+    assert lines[1] == "T-001,P1,Hi"
+
+
+def test_list_format_jsonl(fake_client, capsys):
+    fake_client.responses[("GET", "/api/tasks")] = {
+        "tasks": [{"id": 1, "title": "x"}, {"id": 2, "title": "y"}]
+    }
+    cli.main(["list", "--format", "jsonl"])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(out[0])["id"] == 1
+    assert json.loads(out[1])["id"] == 2
+
+
+def test_list_format_ids(fake_client, capsys):
+    fake_client.responses[("GET", "/api/tasks")] = {
+        "tasks": [
+            {"task_uuid": "T-AAA", "id": 5},
+            {"task_uuid": None, "id": 6},
+        ]
+    }
+    cli.main(["list", "--format", "ids"])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out == ["T-AAA", "6"]
+
+
+def test_list_columns_reorder(fake_client, capsys):
+    fake_client.responses[("GET", "/api/tasks")] = {
+        "tasks": [{"id": 1, "task_uuid": "T-X", "title": "t", "status": "wip",
+                   "owners": [], "attrs": {"area": "fit-val"}}]
+    }
+    cli.main(["list", "--columns", "title,area,id"])
+    out = capsys.readouterr().out
+    header = out.splitlines()[0]
+    # Title first, then arbitrary attr column from attrs, then id.
+    assert header.split() == ["TITLE", "AREA", "ID"]
+    assert "fit-val" in out
+
+
+def test_list_group_by_buckets_table(fake_client, capsys):
+    fake_client.responses[("GET", "/api/tasks")] = {
+        "tasks": [
+            {"id": 1, "task_uuid": "T-1", "title": "a", "status": "todo",
+             "owners": [], "attrs": {"area": "fit-val"}},
+            {"id": 2, "task_uuid": "T-2", "title": "b", "status": "todo",
+             "owners": [], "attrs": {"area": "fit-val"}},
+            {"id": 3, "task_uuid": "T-3", "title": "c", "status": "todo",
+             "owners": [], "attrs": {"area": "infra"}},
+        ]
+    }
+    cli.main(["list", "--group-by", "area"])
+    out = capsys.readouterr().out
+    assert "== area=fit-val  (2) ==" in out
+    assert "== area=infra  (1) ==" in out
+
+
 def test_list_json_output(fake_client, capsys):
     fake_client.responses[("GET", "/api/tasks")] = {"tasks": [{"id": 1}]}
     cli.main(["--json", "list"])

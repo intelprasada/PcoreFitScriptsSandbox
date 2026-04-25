@@ -471,3 +471,49 @@ Saving this as `acme/sprint17.md` produces:
 
 Open the Kanban and you'll see all 6 cards, draggable across `todo` /
 `in-progress` / `blocked` / `done`.
+
+---
+
+## 9. Searching — chip bar, DSL, saved views
+
+The FilterBar above every view (Kanban / Agenda / Calendar / …) supports
+two complementary inputs:
+
+1. **Fixed dropdowns** — owner, project, feature, hide-done, free-text
+   `q`. These map 1:1 to the long-standing API filters.
+2. **Chip bar** — a free-form text input that accepts the same mini-DSL
+   the `vn` CLI uses. Type a clause, hit **Enter**, get a chip;
+   **Backspace** in an empty input removes the last chip; click `×` on
+   any chip to drop it.
+
+### DSL cheat sheet
+
+```
+owner=alice
+project!=internal
+priority in P0,P1
+eta>=ww18
+@area=fit-val            # any arbitrary `#tag` — prefix with `@`
+@risk in high,medium
+status=!done             # the legacy "everything but done" sentinel
+```
+
+Operators: `=`, `!=`, `>=`, `<=`, `>`, `<`, `in`, `not in`, `like`.
+Clauses are AND-ed; repeating the same `@key` ORs values for that key.
+
+### Autocomplete
+
+Typing `@` opens a dropdown listing every distinct `#tag` key in your
+notes (sourced from `GET /api/attrs`), each with a couple of sample
+values. Click to insert `@key=` and finish typing the value.
+
+### Saved views
+
+Build a chip set you'll want again, hit **save**, give it a name. It's
+stored per-user (`User.saved_views_json`) and reappears in the **★
+saved views** dropdown on every device. Pick from the dropdown to
+replace the current chip set; use the small red `×` selector next to it
+to delete a saved view.
+
+Behind the scenes saved views are just `{ name: ["@area=fit-val", … ] }`
+maps — you can poke at them directly via `GET/PUT /api/me/views`.

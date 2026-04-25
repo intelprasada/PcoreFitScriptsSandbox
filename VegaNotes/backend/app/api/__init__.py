@@ -1,6 +1,7 @@
 """REST API routers."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
 import shutil
 from pathlib import Path
@@ -395,6 +396,58 @@ def parse_preview(body: dict = Body(...)) -> dict[str, Any]:
 
 # ---------- tasks (composable filters) -------------------------------------
 
+# Operators allowed for the repeatable `attr` query param.
+# Form on the wire: `attr=key:op:value` (value may contain `:` itself).
+# `exists` / `nexists` accept an empty value (`attr=key:exists:`).
+_ATTR_OPS = {"eq", "ne", "in", "nin", "gte", "lte", "gt", "lt", "like", "exists", "nexists"}
+_ATTR_RANGE_OPS = {"gte", "lte", "gt", "lt"}
+_ATTR_OP_SQL = {
+    "eq": "=", "ne": "!=", "gte": ">=", "lte": "<=", "gt": ">", "lt": "<",
+}
+
+# Whitelisted sort fields.  Map to (kind, sql-expression).  "task" =
+# Task column, "attr" = a normalized TaskAttr lookup (joined LEFT so tasks
+# missing the attr sort to the end).
+_SORT_FIELDS = {
+    "id":         ("task", "t.id"),
+    "title":      ("task", "t.title"),
+    "status":     ("task", "t.status"),
+    "kind":       ("task", "t.kind"),
+    "created_at": ("task", "t.created_at"),
+    "updated_at": ("task", "t.updated_at"),
+    "eta":        ("attr", "eta"),
+    "priority":   ("attr", "priority"),
+}
+
+
+def _parse_attr_clause(raw: str) -> tuple[str, str, str]:
+    """Parse `key:op:value` into (key, op, value).  Raises HTTPException(400)."""
+    parts = raw.split(":", 2)
+    if len(parts) < 2:
+        raise HTTPException(400, f"bad attr clause: {raw!r} (expected key:op[:value])")
+    key, op = parts[0].strip(), parts[1].strip().lower()
+    value = parts[2] if len(parts) == 3 else ""
+    if not key:
+        raise HTTPException(400, f"bad attr clause: {raw!r} (empty key)")
+    if op not in _ATTR_OPS:
+        raise HTTPException(
+            400,
+            f"bad attr clause: {raw!r} (unknown op {op!r}; valid: {sorted(_ATTR_OPS)})",
+        )
+    if op in {"exists", "nexists"}:
+        return key, op, ""
+    if op in _ATTR_RANGE_OPS and key not in {"eta", "priority"}:
+        # Range queries require a normalized value (value_norm).  Today only
+        # eta/priority normalize, so reject other keys early with a clear
+        # message instead of silently returning empty results.
+        raise HTTPException(
+            400,
+            f"range op {op!r} on attr {key!r} requires value_norm; only "
+            f"'eta' and 'priority' normalize today. Use eq/ne/in/nin instead.",
+        )
+    return key, op, value
+
+
 @router.get("/tasks")
 def list_tasks(
     s: Session = Depends(get_session),
@@ -410,9 +463,20 @@ def list_tasks(
     kind: Optional[str] = None,
     top_level_only: bool = False,
     include_children: bool = False,
+    # ── new (issue #38 follow-up) ─────────────────────────────────────
+    not_owner: Optional[str] = None,
+    not_project: Optional[str] = None,
+    not_feature: Optional[str] = None,
+    not_status: Optional[str] = None,
+    not_priority: Optional[str] = None,
+    attr: list[str] = Query(default_factory=list),
+    sort: Optional[str] = None,
+    limit: Optional[int] = Query(default=None, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     sql = ["SELECT DISTINCT t.id FROM task t"]
     params: dict[str, Any] = {}
+    expanding: list[str] = []
 
     def _join_multi(table: str, name_table: str, names: list[str], alias: str) -> None:
         if not names:
@@ -423,6 +487,7 @@ def list_tasks(
         )
         sql.append(f"AND {alias}.name IN :{alias}_names")
         params[f"{alias}_names"] = tuple(names)
+        expanding.append(f"{alias}_names")
 
     _join_multi("taskowner", "user", _split(owner), "u")
     _join_multi("taskproject", "project", _split(project), "p")
@@ -435,11 +500,13 @@ def list_tasks(
         statuses = _split(status)
         where.append("t.status IN :statuses")
         params["statuses"] = tuple(statuses)
+        expanding.append("statuses")
     if priority:
         prios = _split(priority)
         sql.append("JOIN taskattr pa ON pa.task_id = t.id AND pa.key='priority'")
         where.append("pa.value IN :prios")
         params["prios"] = tuple(prios)
+        expanding.append("prios")
     if eta_before or eta_after:
         sql.append("JOIN taskattr ea ON ea.task_id = t.id AND ea.key='eta'")
         if eta_before:
@@ -455,21 +522,164 @@ def list_tasks(
         kinds = _split(kind)
         where.append("t.kind IN :kinds")
         params["kinds"] = tuple(kinds)
+        expanding.append("kinds")
     if top_level_only:
         where.append("(t.parent_task_id IS NULL AND t.kind = 'task')")
 
+    # ── negations ────────────────────────────────────────────────────────
+    def _exclude(name_table: str, link_table: str, link_col: str,
+                 names: list[str], slot: str) -> None:
+        if not names:
+            return
+        where.append(
+            f"t.id NOT IN ("
+            f"SELECT lk.task_id FROM {link_table} lk "
+            f"JOIN {name_table} nm ON nm.id = lk.{link_col} "
+            f"WHERE nm.name IN :{slot})"
+        )
+        params[slot] = tuple(names)
+        expanding.append(slot)
+
+    _exclude("user",    "taskowner",   "user_id",    _split(not_owner),   "not_u_names")
+    _exclude("project", "taskproject", "project_id", _split(not_project), "not_p_names")
+    _exclude("feature", "taskfeature", "feature_id", _split(not_feature), "not_f_names")
+
+    if not_status:
+        where.append("t.status NOT IN :not_statuses")
+        params["not_statuses"] = tuple(_split(not_status))
+        expanding.append("not_statuses")
+    if not_priority:
+        where.append(
+            "t.id NOT IN ("
+            "SELECT task_id FROM taskattr WHERE key='priority' AND value IN :not_prios)"
+        )
+        params["not_prios"] = tuple(_split(not_priority))
+        expanding.append("not_prios")
+
+    # ── arbitrary @attr filters ──────────────────────────────────────────
+    for i, raw in enumerate(attr):
+        key, op, value = _parse_attr_clause(raw)
+        kp, vp = f"axk_{i}", f"axv_{i}"
+        params[kp] = key
+        if op == "exists":
+            where.append(
+                f"EXISTS (SELECT 1 FROM taskattr ax{i} "
+                f"WHERE ax{i}.task_id = t.id AND ax{i}.key = :{kp})"
+            )
+            continue
+        if op == "nexists":
+            where.append(
+                f"NOT EXISTS (SELECT 1 FROM taskattr ax{i} "
+                f"WHERE ax{i}.task_id = t.id AND ax{i}.key = :{kp})"
+            )
+            continue
+        col = "value_norm" if op in _ATTR_RANGE_OPS else "value"
+        if op == "in":
+            where.append(
+                f"EXISTS (SELECT 1 FROM taskattr ax{i} "
+                f"WHERE ax{i}.task_id = t.id AND ax{i}.key = :{kp} "
+                f"AND ax{i}.{col} IN :{vp})"
+            )
+            params[vp] = tuple(v for v in (tok.strip() for tok in value.split(",")) if v)
+            expanding.append(vp)
+        elif op == "nin":
+            where.append(
+                f"NOT EXISTS (SELECT 1 FROM taskattr ax{i} "
+                f"WHERE ax{i}.task_id = t.id AND ax{i}.key = :{kp} "
+                f"AND ax{i}.{col} IN :{vp})"
+            )
+            params[vp] = tuple(v for v in (tok.strip() for tok in value.split(",")) if v)
+            expanding.append(vp)
+        elif op == "ne":
+            # "ne" means: there is no row with this key=value.  (Tasks that
+            # don't have the key at all also satisfy `ne`.)
+            where.append(
+                f"NOT EXISTS (SELECT 1 FROM taskattr ax{i} "
+                f"WHERE ax{i}.task_id = t.id AND ax{i}.key = :{kp} "
+                f"AND ax{i}.{col} = :{vp})"
+            )
+            params[vp] = value
+        elif op == "like":
+            where.append(
+                f"EXISTS (SELECT 1 FROM taskattr ax{i} "
+                f"WHERE ax{i}.task_id = t.id AND ax{i}.key = :{kp} "
+                f"AND ax{i}.{col} LIKE :{vp})"
+            )
+            params[vp] = value
+        else:
+            sql_op = _ATTR_OP_SQL[op]
+            where.append(
+                f"EXISTS (SELECT 1 FROM taskattr ax{i} "
+                f"WHERE ax{i}.task_id = t.id AND ax{i}.key = :{kp} "
+                f"AND ax{i}.{col} {sql_op} :{vp})"
+            )
+            params[vp] = value
+
+    # ── ORDER BY ─────────────────────────────────────────────────────────
+    order_clauses: list[str] = []
+    sort_joins: list[str] = []
+    if sort:
+        for i, raw in enumerate([tok.strip() for tok in sort.split(",") if tok.strip()]):
+            field, _, direction = raw.partition(":")
+            field = field.strip()
+            direction = (direction or "asc").strip().lower()
+            if direction not in {"asc", "desc"}:
+                raise HTTPException(400, f"bad sort direction: {raw!r}")
+            spec = _SORT_FIELDS.get(field)
+            if not spec:
+                raise HTTPException(
+                    400,
+                    f"unknown sort field {field!r}; valid: {sorted(_SORT_FIELDS)}",
+                )
+            kind_, expr = spec
+            if kind_ == "task":
+                order_clauses.append(f"{expr} {direction.upper()}")
+            else:
+                alias = f"so{i}"
+                sort_joins.append(
+                    f"LEFT JOIN taskattr {alias} ON {alias}.task_id = t.id "
+                    f"AND {alias}.key = '{expr}'"
+                )
+                # NULLs always last so unstamped tasks don't pollute the top.
+                order_clauses.append(
+                    f"({alias}.value_norm IS NULL) ASC, "
+                    f"{alias}.value_norm {direction.upper()}"
+                )
+    # Stable tiebreaker so identical sort keys order deterministically.
+    order_clauses.append("t.id ASC")
+
+    sql.extend(sort_joins)
     sql.append("WHERE " + " AND ".join(where))
+    sql.append("ORDER BY " + ", ".join(order_clauses))
     sql_text = " ".join(sql)
     stmt = text(sql_text)
-    expanding_keys = [k for k in ("u_names", "p_names", "f_names", "statuses", "prios", "kinds") if k in params]
-    if expanding_keys:
-        stmt = stmt.bindparams(*[bindparam(k, expanding=True) for k in expanding_keys])
+    if expanding:
+        stmt = stmt.bindparams(*[bindparam(k, expanding=True) for k in expanding])
     rows = s.exec(stmt.bindparams(**params)).all()
-    ids = [r[0] for r in rows]
-    if not ids:
-        return {"tasks": [], "aggregations": {"owners": [], "projects": [], "features": [], "status_breakdown": {}, "priority_breakdown": {}}}
+    all_ids = [r[0] for r in rows]
+    total = len(all_ids)
 
-    tasks = [_task_to_dict(s, s.get(Task, i), include_children=include_children) for i in ids]
+    # Paginate after we know the total.  When `limit` is omitted we keep
+    # the historical "return everything" behavior so existing callers
+    # don't silently get truncated.
+    if limit is not None:
+        page_ids = all_ids[offset : offset + limit]
+    else:
+        page_ids = all_ids[offset:] if offset else all_ids
+
+    if not page_ids:
+        return {
+            "tasks": [],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "aggregations": {
+                "owners": [], "projects": [], "features": [],
+                "status_breakdown": {}, "priority_breakdown": {},
+            },
+        }
+
+    tasks = [_task_to_dict(s, s.get(Task, i), include_children=include_children) for i in page_ids]
 
     agg_owners = sorted({o for t in tasks for o in t["owners"]})
     agg_projects = sorted({p for t in tasks for p in t["projects"]})
@@ -483,6 +693,9 @@ def list_tasks(
 
     return {
         "tasks": tasks,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
         "aggregations": {
             "owners": agg_owners,
             "projects": agg_projects,
@@ -491,6 +704,38 @@ def list_tasks(
             "priority_breakdown": prio_bd,
         },
     }
+
+
+# ---------- attr key catalog (autocomplete) --------------------------------
+
+@router.get("/attrs")
+def list_attr_keys(s: Session = Depends(get_session)) -> list[dict[str, Any]]:
+    """Distinct attr keys with cardinality and a few sample values.
+
+    Used by the FilterBar (and `vn`) for tab-completing `@key` and `=value`
+    in the query DSL.  Cheap aggregate; we cap the sample list at 25.
+    """
+    rows = s.exec(
+        text("SELECT key, COUNT(*) AS cnt FROM taskattr GROUP BY key ORDER BY cnt DESC, key ASC")
+    ).all()
+    out: list[dict[str, Any]] = []
+    for key, cnt in rows:
+        samples = s.exec(
+            text(
+                "SELECT DISTINCT value FROM taskattr "
+                "WHERE key = :k AND value != '' "
+                "ORDER BY value LIMIT 25"
+            ).bindparams(k=key)
+        ).all()
+        out.append({
+            "key": key,
+            "count": int(cnt),
+            "sample_values": [r[0] for r in samples],
+        })
+    return out
+
+
+
 
 
 # ---------- agenda ----------------------------------------------------------
@@ -1043,6 +1288,61 @@ def change_my_password(
     s.add(u)
     s.commit()
     return {"status": "ok"}
+
+
+# ---------- saved views (per-user query bookmarks) -------------------------
+
+class SavedView(BaseModel):
+    """Named reusable query — exactly the shape the FilterBar / `vn`
+    serialize to and from.  `query` is an opaque dict of API params."""
+    name: str
+    query: dict[str, Any] = {}
+
+
+def _load_views(u: User) -> list[dict[str, Any]]:
+    raw = u.saved_views_json or "[]"
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+@router.get("/me/views")
+def list_my_views(
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> list[dict[str, Any]]:
+    u = s.exec(select(User).where(User.name == user)).first()
+    if u is None:
+        raise HTTPException(404, "user not found")
+    return _load_views(u)
+
+
+@router.put("/me/views")
+def replace_my_views(
+    body: list[SavedView] = Body(...),
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> dict[str, Any]:
+    """Replace this user's full saved-view list.  Idempotent."""
+    u = s.exec(select(User).where(User.name == user)).first()
+    if u is None:
+        raise HTTPException(404, "user not found")
+    seen: set[str] = set()
+    cleaned: list[dict[str, Any]] = []
+    for v in body:
+        name = v.name.strip()
+        if not name:
+            raise HTTPException(400, "view name cannot be empty")
+        if name in seen:
+            raise HTTPException(400, f"duplicate view name: {name!r}")
+        seen.add(name)
+        cleaned.append({"name": name, "query": v.query or {}})
+    u.saved_views_json = json.dumps(cleaned)
+    s.add(u)
+    s.commit()
+    return {"status": "ok", "count": len(cleaned)}
 
 
 # ---------- admin: user management ----------------------------------------

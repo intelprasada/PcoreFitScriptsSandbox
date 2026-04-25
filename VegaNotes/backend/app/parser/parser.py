@@ -70,20 +70,26 @@ class ParsedTask:
 
 
 def _attach_attr(task: ParsedTask, tok: Token) -> None:
-    spec = REGISTRY[tok.name]
+    spec = REGISTRY.get(tok.name)
     if tok.name == "status":
-        task.status = spec.normalize(tok.value) if spec.normalize else (tok.value.strip().lower() or "todo")
+        # status keeps its bespoke handling regardless of registry presence.
+        norm = spec.normalize(tok.value) if (spec and spec.normalize) else None
+        task.status = norm if norm else (tok.value.strip().lower() or "todo")
     if tok.name in {"task", "link"}:
         kind = "task" if tok.name == "task" else "link"
         task.refs.append({"kind": kind, "dst_slug": slugify(tok.value)})
         return
-    if spec.multi:
+    # Unknown #names are treated as generic multi-valued attrs with no
+    # normalization — this is what makes `#area`, `#risk`, `#milestone`, …
+    # queryable without code changes (issue #38 follow-up).
+    multi = spec.multi if spec else True
+    if multi:
         existing = task.attrs.setdefault(tok.name, [])
         if tok.value not in existing:
             existing.append(tok.value)
     else:
         task.attrs[tok.name] = tok.value
-    if spec.normalize:
+    if spec and spec.normalize:
         norm = spec.normalize(tok.value)
         if spec.multi:
             existing_norm = task.attrs_norm.setdefault(tok.name, [])
@@ -168,9 +174,10 @@ def _is_ref_row(items: list) -> Token | None:
 def _merge_inherited(task: ParsedTask, inherited: Dict[str, list]) -> None:
     for key, values in inherited.items():
         spec = REGISTRY.get(key)
-        if spec is None:
-            continue
-        if spec.multi:
+        # Unknown attrs inherit as multi-valued; known non-multi keep
+        # first-write-wins semantics.
+        multi = spec.multi if spec else True
+        if multi:
             existing = task.attrs.get(key, [])
             if not isinstance(existing, list):
                 existing = [existing]
@@ -180,19 +187,22 @@ def _merge_inherited(task: ParsedTask, inherited: Dict[str, list]) -> None:
                     merged.append(v)
             if merged:
                 task.attrs[key] = merged
-                if spec.normalize:
+                if spec and spec.normalize:
                     task.attrs_norm[key] = [spec.normalize(v) for v in merged]
         else:
             if key not in task.attrs and values:
                 task.attrs[key] = values[0]
-                if spec.normalize:
+                if spec and spec.normalize:
                     task.attrs_norm[key] = spec.normalize(values[0])
 
 
 def _inherit_from_parent(task: ParsedTask, parent: ParsedTask) -> None:
     for k, v in parent.attrs.items():
         spec = REGISTRY.get(k)
-        if spec is None or not spec.multi:
+        # Multi-valued attrs (known or unknown) inherit downward; scalar
+        # known attrs deliberately do NOT (preserves original behavior).
+        multi = spec.multi if spec else True
+        if not multi:
             continue
         existing = task.attrs.get(k, [])
         if not isinstance(existing, list):
@@ -202,7 +212,7 @@ def _inherit_from_parent(task: ParsedTask, parent: ParsedTask) -> None:
             if item not in merged:
                 merged.append(item)
         task.attrs[k] = merged
-        if spec.normalize:
+        if spec and spec.normalize:
             task.attrs_norm[k] = [spec.normalize(item) for item in merged]
 
 
@@ -297,9 +307,8 @@ def parse(md: str) -> Dict[str, Any]:
                     if t is task_ref:
                         continue
                     spec = REGISTRY.get(t.name)
-                    if spec is None:
-                        continue
-                    if spec.multi:
+                    multi = spec.multi if spec else True
+                    if multi:
                         overrides.setdefault(t.name, []).append(t.value)
                     else:
                         overrides[t.name] = t.value
