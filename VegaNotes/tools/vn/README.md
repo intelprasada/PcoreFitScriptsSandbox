@@ -85,7 +85,7 @@ vn task T-123 status=done priority=P1 eta=2026-W18
 vn task T-456 owners=alice,bob feature=login add-note='shipped behind flag'
 ```
 
-### `vn list [filters]`
+### `vn list [filters]`  (alias: `vn query`)
 
 ```bash
 vn list --owner kushwanth --status open
@@ -93,7 +93,49 @@ vn list --project gfc --priority P0,P1 --hide-done
 vn list -q "carveout" --limit 20
 ```
 
-Outputs a human-readable table; pass `--json` for raw API output.
+Outputs a human-readable table by default; pick another shape with
+`--format`:
+
+| `--format` | description                                                  |
+| ---------- | ------------------------------------------------------------ |
+| `table`    | aligned columns, the default                                 |
+| `json`     | the raw API envelope (same as `--json`)                      |
+| `jsonl`    | one task per line — scriptable                               |
+| `csv`      | header row + data rows                                       |
+| `ids`      | one `T-XXXXXX` (or int PK) per line — pipes into `xargs`     |
+
+Pick + reorder columns with `--columns id,priority,eta,title`; bucket
+the table by any field with `--group-by area`.
+
+#### Query language (`-w` / `--where`)
+
+`vn list` (and the `vn query` alias) accept repeatable `--where` clauses
+that compile to `/api/tasks` parameters. The grammar is `key OP value`:
+
+| Operators (symbolic) | Operators (word)        |
+| -------------------- | ----------------------- |
+| `=`, `!=`            | `in`, `not in`, `like`  |
+| `>=`, `<=`, `>`, `<` |                         |
+
+* **Bare keys** map to fixed columns: `owner`, `project`, `feature`,
+  `priority`, `status`, `eta`, `q`, `kind`. `=`/`!=`/`in` only;
+  inequality compiles to `not_*`.
+* **`@key`** addresses any other `#tag` attribute (e.g. `@area`,
+  `@risk`, `@team`). All operators allowed; range ops require a
+  `value_norm`-populated key (today: `eta`, `priority`).
+* `eta>=ww18` / `eta<=2026-05-01` route to the dedicated date-typed
+  `eta_after` / `eta_before` params; `eta=ww17` (bucket equality)
+  routes through the generic attr path.
+
+```bash
+vn list -w 'owner=alice' -w '@area=fit-val' -w 'eta>=ww18' --sort eta:desc
+vn list -w 'priority in P0,P1' -w 'project!=internal' --limit 50
+vn list -w '@area=fit-val' --format ids | xargs -n1 -I{} vn task {} status=done
+```
+
+Other handy flags (mostly thin convenience over the same wire params):
+`--sort`, `--limit`, `--offset`, `--not-owner`, `--not-project`,
+`--not-feature`, `--not-status`, `--not-priority`, `--kind`.
 
 ### `vn note new --project <p> --title <t>`
 

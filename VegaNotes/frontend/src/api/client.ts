@@ -131,9 +131,16 @@ export const api = {
     ),
   parsePreview: (body_md: string) => req("/parse", { method: "POST", body: JSON.stringify({ body_md }) }),
 
-  tasks: (params: Record<string, string | boolean | undefined>) => {
+  tasks: (params: Record<string, string | string[] | boolean | undefined>) => {
     const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === "") continue;
+      if (Array.isArray(v)) {
+        for (const item of v) if (item !== undefined && item !== "") qs.append(k, String(item));
+      } else {
+        qs.set(k, String(v));
+      }
+    }
     return req<TasksResponse>(`/tasks?${qs.toString()}`);
   },
   updateTask: (id: number, patch: {
@@ -209,4 +216,12 @@ export const api = {
     req(`/admin/users/${encodeURIComponent(name)}`, { method: "DELETE" }),
 
   search: (q: string) => req<{ id: number; path: string; title: string }[]>(`/search?q=${encodeURIComponent(q)}`),
+
+  // Generic attribute autocomplete (issue #38 follow-up).
+  attrs: () => req<{ key: string; count: number; sample_values: string[] }[]>("/attrs"),
+
+  // Per-user saved chip-bar views (issue #38 follow-up).
+  savedViews: () => req<Record<string, string[]>>("/me/views"),
+  saveViews: (views: Record<string, string[]>) =>
+    req<Record<string, string[]>>("/me/views", { method: "PUT", body: JSON.stringify(views) }),
 };

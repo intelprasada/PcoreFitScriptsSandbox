@@ -25,6 +25,7 @@ from typing import Any, Optional, Sequence
 from . import __version__
 from .client import ApiError, Client
 from .config import CredentialsError, load_credentials
+from .query import DSLError, compile_clauses
 
 
 # Attribute keys accepted by `vn task ID key=value ...`.
@@ -71,31 +72,41 @@ def _print_json(data: Any) -> None:
     sys.stdout.write("\n")
 
 
-def _print_task_table(tasks: list[dict[str, Any]]) -> None:
+_DEFAULT_COLUMNS = ("id", "status", "priority", "eta", "owners", "title")
+
+
+def _task_field(task: dict[str, Any], col: str) -> str:
+    """Render a single column value for a task as a flat string."""
+    col = col.lower()
+    if col == "id":
+        return str(task.get("task_uuid") or task.get("ref") or task.get("id") or "")
+    if col == "title":
+        return (task.get("title") or "").strip()
+    if col == "status":
+        return str(task.get("status") or "")
+    if col == "owners":
+        owners = task.get("owners") or []
+        return ",".join(owners) if isinstance(owners, list) else str(owners)
+    if col == "features":
+        feats = task.get("features") or []
+        return ",".join(feats) if isinstance(feats, list) else str(feats)
+    attrs = task.get("attrs") or {}
+    val = attrs.get(col)
+    if val is None:
+        # Fall back to top-level keys so e.g. `--columns project,id` works
+        # whether `project` lives on the row or in attrs.
+        val = task.get(col, "")
+    if isinstance(val, list):
+        val = ",".join(str(v) for v in val)
+    return str(val)
+
+
+def _print_task_table(tasks: list[dict[str, Any]], columns: tuple[str, ...] = _DEFAULT_COLUMNS) -> None:
     if not tasks:
         print("(no tasks)")
         return
-    rows = []
-    for t in tasks:
-        attrs = t.get("attrs") or {}
-        prio = attrs.get("priority", "")
-        if isinstance(prio, list):
-            prio = prio[0] if prio else ""
-        eta = attrs.get("eta", "")
-        if isinstance(eta, list):
-            eta = eta[0] if eta else ""
-        # Prefer the T-XXXXXX uuid (what `vn task <ID>` expects); fall
-        # back to the integer PK for unstamped tasks.
-        ident = t.get("task_uuid") or t.get("ref") or t.get("id") or ""
-        rows.append((
-            str(ident),
-            str(t.get("status") or ""),
-            str(prio),
-            str(eta),
-            ",".join(t.get("owners") or []),
-            (t.get("title") or "").strip(),
-        ))
-    headers = ("ID", "STATUS", "PRIO", "ETA", "OWNERS", "TITLE")
+    rows = [tuple(_task_field(t, c) for c in columns) for t in tasks]
+    headers = tuple(c.upper() for c in columns)
     widths = [
         max(len(h), max((len(r[i]) for r in rows), default=0))
         for i, h in enumerate(headers)
@@ -105,6 +116,48 @@ def _print_task_table(tasks: list[dict[str, Any]]) -> None:
     print(fmt.format(*("-" * w for w in widths)))
     for r in rows:
         print(fmt.format(*r))
+
+
+def _print_task_csv(tasks: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
+    import csv
+    w = csv.writer(sys.stdout)
+    w.writerow([c.lower() for c in columns])
+    for t in tasks:
+        w.writerow([_task_field(t, c) for c in columns])
+
+
+def _print_task_jsonl(tasks: list[dict[str, Any]]) -> None:
+    for t in tasks:
+        sys.stdout.write(json.dumps(t, default=str, sort_keys=True))
+        sys.stdout.write("\n")
+
+
+def _print_task_ids(tasks: list[dict[str, Any]]) -> None:
+    for t in tasks:
+        sys.stdout.write(str(t.get("task_uuid") or t.get("id") or ""))
+        sys.stdout.write("\n")
+
+
+def _bucket_value(task: dict[str, Any], field: str) -> str:
+    val = _task_field(task, field)
+    return val or "—"
+
+
+def _print_grouped(
+    tasks: list[dict[str, Any]],
+    field: str,
+    columns: tuple[str, ...],
+) -> None:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for t in tasks:
+        buckets.setdefault(_bucket_value(t, field), []).append(t)
+    first = True
+    for key in sorted(buckets):
+        if not first:
+            print()
+        first = False
+        print(f"== {field}={key}  ({len(buckets[key])}) ==")
+        _print_task_table(buckets[key], columns)
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -134,7 +187,11 @@ def cmd_task(client: Client, args: argparse.Namespace) -> int:
 
 
 def cmd_list(client: Client, args: argparse.Namespace) -> int:
-    params: dict[str, Any] = {
+    # Start with the explicit fixed-column flags; these win when both a
+    # flag and a `--where` clause set the same key (last-write semantics
+    # via the trailing list extend below).
+    pairs: list[tuple[str, Any]] = []
+    fixed = {
         "owner": args.owner,
         "project": args.project,
         "feature": args.feature,
@@ -144,14 +201,62 @@ def cmd_list(client: Client, args: argparse.Namespace) -> int:
         "eta_after": args.eta_after,
         "hide_done": args.hide_done,
         "q": args.q,
+        "kind": args.kind,
+        "not_owner": args.not_owner,
+        "not_project": args.not_project,
+        "not_feature": args.not_feature,
+        "not_status": args.not_status,
+        "not_priority": args.not_priority,
+        "sort": args.sort,
         "limit": args.limit,
+        "offset": args.offset,
     }
+    for k, v in fixed.items():
+        if v is None or v is False:
+            continue
+        pairs.append((k, v))
+
+    # Compile --where clauses to additional wire pairs.
+    try:
+        pairs.extend(compile_clauses(args.where or []))
+    except DSLError as e:
+        print(f"vn: bad --where clause: {e}", file=sys.stderr)
+        return 2
+
+    # Re-shape into the dict the Client expects (lists for repeats).
+    params: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in params:
+            cur = params[k]
+            if isinstance(cur, list):
+                cur.append(v)
+            else:
+                params[k] = [cur, v]
+        else:
+            params[k] = v
+
     data = client.get("/api/tasks", **params)
     tasks = (data or {}).get("tasks") if isinstance(data, dict) else data
-    if args.json:
+
+    fmt = (args.format or ("json" if args.json else "table")).lower()
+    columns = tuple(c.strip().lower() for c in (args.columns or ",".join(_DEFAULT_COLUMNS)).split(",") if c.strip())
+
+    if fmt == "json":
         _print_json(data)
+    elif fmt == "jsonl":
+        _print_task_jsonl(tasks or [])
+    elif fmt == "csv":
+        _print_task_csv(tasks or [], columns)
+    elif fmt == "ids":
+        _print_task_ids(tasks or [])
+    elif fmt == "table":
+        if args.group_by:
+            _print_grouped(tasks or [], args.group_by.lower(), columns)
+        else:
+            _print_task_table(tasks or [], columns)
     else:
-        _print_task_table(tasks or [])
+        print(f"vn: unknown --format: {fmt}", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -214,18 +319,55 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("attrs", nargs="*", help="key=value pairs")
     pt.set_defaults(func=cmd_task)
 
+    def _add_list_args(target: argparse.ArgumentParser) -> None:
+        target.add_argument("--owner")
+        target.add_argument("--project")
+        target.add_argument("--feature")
+        target.add_argument("--priority")
+        target.add_argument("--status")
+        target.add_argument("--kind")
+        target.add_argument("--eta-before", dest="eta_before")
+        target.add_argument("--eta-after", dest="eta_after")
+        target.add_argument("--hide-done", action="store_true", dest="hide_done")
+        target.add_argument("-q", "--query", dest="q")
+        target.add_argument("--not-owner", dest="not_owner")
+        target.add_argument("--not-project", dest="not_project")
+        target.add_argument("--not-feature", dest="not_feature")
+        target.add_argument("--not-status", dest="not_status")
+        target.add_argument("--not-priority", dest="not_priority")
+        target.add_argument(
+            "-w", "--where", action="append", default=[],
+            help="DSL clause, repeatable (e.g. --where '@area=fit-val' --where 'eta>=ww18')",
+        )
+        target.add_argument("--sort", help="sort spec, e.g. 'eta:desc' or 'priority,title'")
+        target.add_argument("--limit", type=int)
+        target.add_argument("--offset", type=int)
+        target.add_argument(
+            "--format", choices=("table", "json", "jsonl", "csv", "ids"),
+            help="output format (default: table; 'json' if --json is set)",
+        )
+        target.add_argument(
+            "--columns",
+            help="comma-separated columns for table/csv "
+                 f"(default: {','.join(_DEFAULT_COLUMNS)})",
+        )
+        target.add_argument(
+            "--group-by", dest="group_by",
+            help="bucket the table output by this field (table format only)",
+        )
+        target.set_defaults(func=cmd_list)
+
     pl = sub.add_parser("list", help="list tasks")
-    pl.add_argument("--owner")
-    pl.add_argument("--project")
-    pl.add_argument("--feature")
-    pl.add_argument("--priority")
-    pl.add_argument("--status")
-    pl.add_argument("--eta-before", dest="eta_before")
-    pl.add_argument("--eta-after", dest="eta_after")
-    pl.add_argument("--hide-done", action="store_true", dest="hide_done")
-    pl.add_argument("-q", "--query", dest="q")
-    pl.add_argument("--limit", type=int)
-    pl.set_defaults(func=cmd_list)
+    _add_list_args(pl)
+
+    pq = sub.add_parser(
+        "query",
+        help="alias for 'list' — discoverability for query-style usage",
+        description="Examples:\n"
+                    "  vn query -w 'owner=alice' -w '@area=fit-val' --sort eta:desc\n"
+                    "  vn query -w 'priority in P0,P1' --format ids | xargs -n1 vn task",
+    )
+    _add_list_args(pq)
 
     pn = sub.add_parser("note", help="note operations")
     nsub = pn.add_subparsers(dest="note_command", required=True)

@@ -69,7 +69,12 @@ def _read_value(s: str, i: int, *, until_hash: bool = False) -> tuple[str, int]:
         while j < n:
             if s[j] == "#":
                 m = re.match(r"#([a-zA-Z][\w-]*)", s[j:])
-                if m and is_known(m.group(1)):
+                if m:
+                    # Any attribute-shaped #name terminates the title — even
+                    # for unknown names, which the parser will accept as
+                    # generic attrs (issue #38 follow-up). The lexer will
+                    # later drop empty-value attrs so prose hashtags
+                    # (`#urgent` at EOL) are unaffected.
                     break
             if s[j] == "@" and (j == 0 or s[j - 1] in " \t([") and j + 1 < n and (s[j + 1].isalpha() or s[j + 1] == "_"):
                 break
@@ -111,23 +116,26 @@ def lex(line: str) -> List[Union[TextChunk, Token]]:
             last = end
         else:
             name = m.group("name")
-            # only consume known attribute names; unknown stay as text
-            if not is_known(name):
-                # treat as plain text — copy through
-                end = m.end()
-                if start > last:
-                    pass  # already emitted
+            # Read the value the way the spec dictates; for unknown names
+            # use the default whitespace-delimited word.  An attribute with
+            # an *empty* value is treated as prose (a `#hashtag` with no
+            # value, e.g. trailing `#urgent` at EOL): we copy the literal
+            # text through so existing notes that use `#foo` as a tag in
+            # prose continue to render unchanged.
+            spec_known = is_known(name)
+            value, end = _read_value(
+                line, m.end(),
+                until_hash=(spec_known and name in ("status", "note")),
+            )
+            if not value.strip():
                 out.append(TextChunk(line[start:end]))
                 i = end
                 last = end
                 continue
-            value, end = _read_value(line, m.end(), until_hash=(name in ("status", "note")))
             raw = line[start:end]
             if name == "status":
                 value = value.strip()
             elif name == "note":
-                # Trim trailing whitespace but keep internal spaces; an empty
-                # note token (just `#note` with no value) is dropped.
                 value = value.strip()
                 if not value:
                     i = end

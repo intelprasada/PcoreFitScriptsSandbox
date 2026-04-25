@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type Task } from "../../api/client";
 import { TaskCard } from "../Card/TaskCard";
 import { TaskEditPopover } from "../Tasks/TaskEditPopover";
-import { useUI } from "../../store/ui";
+import { useUI, filtersToParams } from "../../store/ui";
 import { useFontScale, type FontScale } from "../../store/fontScale";
 
 const SCALES: { value: FontScale; label: string; title: string }[] = [
@@ -29,7 +29,7 @@ export function KanbanBoard() {
     queryKey: ["tasks", filters, "kanban"],
     queryFn: () =>
       api.tasks({
-        ...filters,
+        ...filtersToParams(filters),
         hide_done: false,
         top_level_only: true,
         include_children: true,

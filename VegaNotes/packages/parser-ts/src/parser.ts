@@ -41,7 +41,10 @@ function readValue(s: string, i: number, untilHash = false): [string, number] {
     while (j < n) {
       if (s[j] === "#") {
         const m = /^#([a-zA-Z][\w-]*)/.exec(s.slice(j));
-        if (m && isKnown(m[1])) break;
+        // Any attribute-shaped #name terminates the title — even unknown
+        // names, which the parser accepts as generic attrs (issue #38
+        // follow-up). Empty-value attrs are dropped back to text below.
+        if (m) break;
       }
       if (s[j] === "@" && (j === 0 || s[j - 1] === " " || s[j - 1] === "\t" || s[j - 1] === "(" || s[j - 1] === "[")
           && j + 1 < n && /[a-zA-Z_]/.test(s[j + 1])) {
@@ -78,14 +81,25 @@ function lex(line: string): Item[] {
       last = end;
     } else {
       const name = m[2];
-      if (!isKnown(name)) {
-        const end = TOKEN_RE.lastIndex;
+      const known = isKnown(name);
+      // Known status/note read until the next attr; everything else
+      // (including arbitrary unknown attrs) reads a single whitespace-
+      // delimited value. Empty value → keep as prose (`#urgent`).
+      const untilHash = known && (name === "status" || name === "note");
+      const [value, end] = readValue(line, TOKEN_RE.lastIndex, untilHash);
+      if (!value.trim()) {
         out.push({ kind: "text", text: line.slice(start, end) });
+        TOKEN_RE.lastIndex = end;
         last = end;
         continue;
       }
-      const [value, end] = readValue(line, TOKEN_RE.lastIndex, name === "status");
-      out.push({ kind: "attr", name, value: name === "status" ? value.trim() : value, raw: line.slice(start, end), col: start });
+      let outValue = value;
+      if (name === "status") outValue = value.trim();
+      else if (name === "note") {
+        outValue = value.trim();
+        if (!outValue) { TOKEN_RE.lastIndex = end; last = end; continue; }
+      }
+      out.push({ kind: "attr", name, value: outValue, raw: line.slice(start, end), col: start });
       TOKEN_RE.lastIndex = end;
       last = end;
     }
@@ -176,12 +190,14 @@ function isContextOnlyLine(items: Item[]): boolean {
 
 function attachAttr(task: ParsedTask, tok: Token): void {
   const spec = REGISTRY[tok.name];
-  if (tok.name === "status") task.status = (spec.normalize ? String(spec.normalize(tok.value)) : tok.value.trim().toLowerCase()) || "todo";
+  if (tok.name === "status") task.status = (spec && spec.normalize ? String(spec.normalize(tok.value)) : tok.value.trim().toLowerCase()) || "todo";
   if (tok.name === "task" || tok.name === "link") {
     task.refs.push({ kind: tok.name, dst_slug: slugify(tok.value) });
     return;
   }
-  if (spec.multi) {
+  // Unknown attrs (no spec) are treated as generic multi-valued and never normalized.
+  const multi = spec ? spec.multi : true;
+  if (multi) {
     const cur = task.attrs[tok.name];
     if (Array.isArray(cur)) {
       if (!cur.includes(tok.value)) cur.push(tok.value);
@@ -191,7 +207,7 @@ function attachAttr(task: ParsedTask, tok: Token): void {
   } else {
     task.attrs[tok.name] = tok.value;
   }
-  if (spec.normalize) {
+  if (spec && spec.normalize) {
     const norm = spec.normalize(tok.value);
     if (spec.multi) {
       const cur = task.attrs_norm[tok.name];
@@ -209,19 +225,19 @@ function attachAttr(task: ParsedTask, tok: Token): void {
 function mergeInherited(task: ParsedTask, inherited: Record<string, string[]>): void {
   for (const [key, values] of Object.entries(inherited)) {
     const spec = REGISTRY[key];
-    if (!spec) continue;
-    if (spec.multi) {
+    const multi = spec ? spec.multi : true;
+    if (multi) {
       const existing = task.attrs[key];
       const arr: string[] = Array.isArray(existing) ? [...existing] : (existing ? [existing] : []);
       for (const v of values) if (!arr.includes(v)) arr.push(v);
       if (arr.length) {
         task.attrs[key] = arr;
-        if (spec.normalize) task.attrs_norm[key] = arr.map((v) => spec.normalize!(v));
+        if (spec && spec.normalize) task.attrs_norm[key] = arr.map((v) => spec.normalize!(v));
       }
     } else {
       if (!(key in task.attrs) && values.length) {
         task.attrs[key] = values[0];
-        if (spec.normalize) task.attrs_norm[key] = spec.normalize(values[0]);
+        if (spec && spec.normalize) task.attrs_norm[key] = spec.normalize(values[0]);
       }
     }
   }
@@ -230,13 +246,14 @@ function mergeInherited(task: ParsedTask, inherited: Record<string, string[]>): 
 function inheritFromParent(task: ParsedTask, parent: ParsedTask): void {
   for (const [k, v] of Object.entries(parent.attrs)) {
     const spec = REGISTRY[k];
-    if (!spec || !spec.multi) continue;
+    // Unknown attrs are treated as multi-valued; known non-multi attrs are not inherited.
+    if (spec && !spec.multi) continue;
     const existing = task.attrs[k];
     const arr: string[] = Array.isArray(existing) ? [...existing] : (existing ? [existing] : []);
     const items = Array.isArray(v) ? v : [v];
     for (const item of items) if (!arr.includes(item)) arr.push(item);
     task.attrs[k] = arr;
-    if (spec.normalize) task.attrs_norm[k] = arr.map((x) => spec.normalize!(x));
+    if (spec && spec.normalize) task.attrs_norm[k] = arr.map((x) => spec.normalize!(x));
   }
 }
 

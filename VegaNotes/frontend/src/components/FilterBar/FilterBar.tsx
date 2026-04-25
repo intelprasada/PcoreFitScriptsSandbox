@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { useUI } from "../../store/ui";
+import { ChipBar } from "./ChipBar";
+import { SavedViews } from "./SavedViews";
 
 export function FilterBar() {
   const { filters, patchFilters, clearFilters } = useUI();
@@ -30,9 +32,11 @@ export function FilterBar() {
           onChange={(e) => patchFilters({ hide_done: e.target.checked })} />
         hide done
       </label>
-      <input className="rounded border px-2 py-1 text-sm flex-1 min-w-[160px]"
+      <input className="rounded border px-2 py-1 text-sm w-[160px]"
         placeholder="search title…" value={filters.q ?? ""}
         onChange={(e) => patchFilters({ q: e.target.value || undefined })} />
+      <ChipBar />
+      <SavedViews />
       <button className="text-sm text-slate-500 hover:text-slate-900"
         onClick={() => clearFilters()}>reset</button>
     </div>

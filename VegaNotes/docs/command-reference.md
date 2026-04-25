@@ -189,9 +189,25 @@ python3 -m pip install --user -e VegaNotes/tools/vn
 # Patch a task (status, priority, eta, owners, features, add-note)
 vn task T-123 status=done priority=P1 eta=2026-W18
 
-# List tasks with filters
+# List tasks with simple filters
 vn list --owner kushwanth --status open --hide-done
 vn list --project gfc --priority P0,P1 --json
+
+# Generic attribute search (issue #38) — `--where` accepts the mini-DSL.
+# Operators: =, !=, >=, <=, >, <, in, not in, like.
+# `@key` addresses arbitrary `#tag` attrs (anything not a fixed column).
+vn list -w 'owner=alice' -w '@area=fit-val' -w 'eta>=ww18' --sort eta:desc
+vn list -w 'priority in P0,P1' -w 'project!=internal' --limit 50
+
+# Output formats: table (default), json, jsonl, csv, ids
+vn list -w '@area=fit-val' --format csv --columns id,priority,eta,title
+vn list -w '@area=fit-val' --format ids | xargs -n1 -I{} vn task {} status=done
+
+# Group the table client-side by any field/attribute
+vn list --group-by area --columns id,priority,title
+
+# `vn query` is an alias for `vn list` for query-style usage
+vn query -w '@risk=high' -w 'status=wip'
 
 # Create a new note: ww16/standup-notes.md
 vn note new --project ww16 --title 'standup notes'
