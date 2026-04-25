@@ -564,3 +564,79 @@ def replace_multi_attr(md: str, line_no: int, key: str, values: list[str]) -> st
     body = f"{body}{sep}{suffix}"
     lines[line_no] = body + nl
     return "".join(lines)
+
+
+# ── Ref-row propagation ───────────────────────────────────────────────────────
+
+# Matches a line whose first significant token (after optional whitespace and
+# bullet marker) is `#task` or `#AR`, capturing the ID/slug that follows.
+# Does NOT match `!task`/`!AR` declaration lines.
+_REF_ROW_LINE_RE = re.compile(
+    r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?#(?:task|ar)\s+(\S+)",
+    re.IGNORECASE,
+)
+
+
+def find_ref_row_lines(md: str, ref_id: str) -> list[int]:
+    """Return 0-based line indices of ``#task``/``#AR`` reference rows for *ref_id*.
+
+    A reference row is a non-declaration line whose first significant token is
+    ``#task <ref_id>`` or ``#AR <ref_id>``.  The *ref_id* comparison is
+    exact and case-sensitive (IDs like ``T-A3F9K2`` are uppercase by
+    construction, but slugs are lower-case — callers should pass the value
+    they expect to appear verbatim in the file).
+    """
+    result: list[int] = []
+    for i, line in enumerate(md.splitlines()):
+        m = _REF_ROW_LINE_RE.match(line)
+        if m and m.group(1) == ref_id:
+            result.append(i)
+    return result
+
+
+def patch_ref_rows(md: str, ref_id: str, patch: dict) -> tuple[str, bool]:
+    """Apply a field patch to every ``#task``/``#AR`` ref row for *ref_id*.
+
+    Supported *patch* keys (all optional):
+
+    * ``status``   — new status string
+    * ``priority`` — new priority string; empty string clears the token
+    * ``eta``      — new ETA string; empty string clears the token
+    * ``owners``   — list of owner names (full replacement)
+    * ``features`` — list of feature names (full replacement)
+
+    ``add_note`` is intentionally **not** supported here — notes are
+    journal entries that belong only in the canonical declaration file.
+
+    Returns ``(new_md, changed)`` where ``changed`` is ``True`` if *md*
+    was actually modified.
+    """
+    line_nos = find_ref_row_lines(md, ref_id)
+    if not line_nos:
+        return md, False
+
+    changed = False
+    for line_no in line_nos:
+        if "status" in patch:
+            md = update_task_status(md, line_no, patch["status"])
+            changed = True
+        if "priority" in patch:
+            val = (patch["priority"] or "").strip()
+            md = (replace_attr(md, line_no, "priority", val)
+                  if val else remove_attr(md, line_no, "priority"))
+            changed = True
+        if "eta" in patch:
+            val = (patch["eta"] or "").strip()
+            md = (replace_attr(md, line_no, "eta", val)
+                  if val else remove_attr(md, line_no, "eta"))
+            changed = True
+        if "owners" in patch:
+            cleaned = [o.strip().lstrip("@") for o in patch["owners"] if o and o.strip()]
+            md = replace_multi_attr(md, line_no, "owner", cleaned)
+            changed = True
+        if "features" in patch:
+            cleaned = [f.strip() for f in patch["features"] if f and f.strip()]
+            md = replace_multi_attr(md, line_no, "feature", cleaned)
+            changed = True
+
+    return md, changed

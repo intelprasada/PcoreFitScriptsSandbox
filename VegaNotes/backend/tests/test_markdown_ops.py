@@ -411,3 +411,84 @@ def test_roll_forward_open_ar_carried_done_ar_dropped():
     # Done AR dropped
     assert "Done action" not in new_md
 
+
+
+# ── find_ref_row_lines ────────────────────────────────────────────────────────
+
+def test_find_ref_row_lines_basic():
+    from app.markdown_ops import find_ref_row_lines
+    md = (
+        "# Weekly\n"
+        "- #task T-ABCD12 My task #status todo\n"
+        "- !task Another task #id T-ZZZZZZ\n"
+        "- #AR T-ABCD12 some AR row\n"
+    )
+    lines = find_ref_row_lines(md, "T-ABCD12")
+    assert lines == [1, 3]
+
+
+def test_find_ref_row_lines_no_match():
+    from app.markdown_ops import find_ref_row_lines
+    md = "- !task Declared #id T-ABCD12\n"
+    # Declaration lines must NOT be returned (they start with !task, not #task).
+    assert find_ref_row_lines(md, "T-ABCD12") == []
+
+
+def test_find_ref_row_lines_indented_bullet():
+    from app.markdown_ops import find_ref_row_lines
+    md = "  - #task T-XY1234 Carry-forward\n"
+    assert find_ref_row_lines(md, "T-XY1234") == [0]
+
+
+# ── patch_ref_rows ────────────────────────────────────────────────────────────
+
+def test_patch_ref_rows_status():
+    from app.markdown_ops import patch_ref_rows
+    md = (
+        "# Sprint ww17\n"
+        "- #task T-ABCD12 Fix login #status todo\n"
+        "Some prose\n"
+    )
+    new_md, changed = patch_ref_rows(md, "T-ABCD12", {"status": "done"})
+    assert changed
+    assert "#status done" in new_md
+    assert "#status todo" not in new_md
+    assert "Some prose" in new_md  # other lines untouched
+
+
+def test_patch_ref_rows_clears_eta():
+    from app.markdown_ops import patch_ref_rows
+    md = "- #task T-ABCD12 Task #eta 2026-W18\n"
+    new_md, changed = patch_ref_rows(md, "T-ABCD12", {"eta": ""})
+    assert changed
+    assert "#eta" not in new_md
+
+
+def test_patch_ref_rows_owners():
+    from app.markdown_ops import patch_ref_rows
+    md = "- #task T-ABCD12 Task @alice\n"
+    new_md, changed = patch_ref_rows(md, "T-ABCD12", {"owners": ["bob", "carol"]})
+    assert changed
+    assert "@bob" in new_md
+    assert "@carol" in new_md
+    assert "@alice" not in new_md
+
+
+def test_patch_ref_rows_no_match_returns_unchanged():
+    from app.markdown_ops import patch_ref_rows
+    md = "- #task T-OTHER my task\n"
+    new_md, changed = patch_ref_rows(md, "T-ABCD12", {"status": "done"})
+    assert not changed
+    assert new_md == md
+
+
+def test_patch_ref_rows_multiple_lines():
+    from app.markdown_ops import patch_ref_rows
+    md = (
+        "- #task T-ABCD12 In ww17 #status todo\n"
+        "- #task T-ABCD12 In ww18 #status todo\n"
+    )
+    new_md, changed = patch_ref_rows(md, "T-ABCD12", {"status": "in-progress"})
+    assert changed
+    assert new_md.count("#status in-progress") == 2
+    assert "#status todo" not in new_md
