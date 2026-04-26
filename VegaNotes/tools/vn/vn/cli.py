@@ -77,14 +77,18 @@ _TREE_DEFAULT_COLUMNS = ("id", "type", "status", "priority", "eta", "owners", "t
 
 
 def _task_type(task: dict[str, Any]) -> str:
-    """Classify a task row as 'task', 'subtask' or 'ar'.
+    """Classify a task row as 'TASK', 'SUBTASK' or 'AR'.
 
-    A row with parent_task_id set is always a subtask (regardless of kind);
-    otherwise the value of `kind` (default 'task') is returned.
+    Kind always wins: a row with kind='ar' renders as 'AR' even when it
+    appears nested under a parent task.  'SUBTASK' is reserved for plain
+    tasks that have a parent.  Result is upper-cased for visual scanning.
     """
+    kind = str(task.get("kind") or "task").lower()
+    if kind == "ar":
+        return "AR"
     if task.get("parent_task_id"):
-        return "subtask"
-    return str(task.get("kind") or "task")
+        return "SUBTASK"
+    return kind.upper()
 
 
 def _task_field(task: dict[str, Any], col: str) -> str:
@@ -202,25 +206,68 @@ def cmd_task(client: Client, args: argparse.Namespace) -> int:
     return 0
 
 
+def _normalize_child(child: dict[str, Any], parent_id: Any) -> dict[str, Any]:
+    """Make a slim child dict look like a top-level row for rendering.
+
+    The API's nested children carry only a handful of fields and no
+    `attrs` map; without this _task_field would render some columns
+    differently for parents vs. children (e.g. `eta` falls back to the
+    normalized value_norm rather than the raw user-typed string).
+    Promote the known fields into a synthetic attrs map so the renderer
+    finds the same key on both shapes.
+    """
+    out = dict(child)
+    out.setdefault("parent_task_id", parent_id)
+    if "attrs" not in out:
+        attrs: dict[str, Any] = {}
+        # Prefer the raw user-typed eta (eta_raw, added by the backend
+        # alongside the back-compat normalized `eta`) so parents and
+        # children render the same shape (e.g. "ww18.2" not "2026-05-04").
+        eta_val = out.get("eta_raw") or out.get("eta")
+        if eta_val:
+            attrs["eta"] = eta_val
+        for k in ("status", "priority"):
+            v = out.get(k)
+            if v is not None and v != "":
+                attrs[k] = v
+        out["attrs"] = attrs
+    return out
+
+
 def _flatten_tree(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Flatten parents + their `children` into one row list, tagging each
     child with an `_indent_prefix` so the title column shows the hierarchy.
 
-    Children come straight from the API's `include_children=true` response
-    (a shallow `children` array per parent).  Parents that have no children
-    are returned as-is.
+    De-duplication: the API returns subtasks twice when --tree is on (once
+    as a top-level row matching kind=task,ar and once as a `children` entry
+    of their parent).  We collect the IDs of all children whose parent is
+    also present in the result, then skip those parents' children at the
+    top level — so each row appears exactly once, preferentially nested
+    under its parent.  Subtasks whose parent did NOT match the filter
+    (orphans) are kept at the top level so they don't disappear.
     """
+    parent_ids = {t.get("id") for t in tasks if t.get("id") is not None}
+    nested_ids: set[Any] = set()
+    for parent in tasks:
+        for c in (parent.get("children") or []):
+            cid = c.get("id")
+            if cid is not None and parent.get("id") in parent_ids:
+                nested_ids.add(cid)
+
     out: list[dict[str, Any]] = []
     for parent in tasks:
+        if parent.get("id") in nested_ids:
+            # This row will be emitted as someone else's child; skip the
+            # duplicate top-level appearance.
+            continue
         parent_copy = dict(parent)
         parent_copy.pop("_indent_prefix", None)
         out.append(parent_copy)
         kids = parent.get("children") or []
         last = len(kids) - 1
         for i, c in enumerate(kids):
-            child = dict(c)
+            child = _normalize_child(c, parent.get("id"))
             child["_indent_prefix"] = ("└─ " if i == last else "├─ ")
-            child.setdefault("parent_task_id", parent.get("id"))
             out.append(child)
     return out
 

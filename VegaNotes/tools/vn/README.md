@@ -133,7 +133,7 @@ default `vn list` shows only top-level tasks (`kind=task`,
 
 | flag              | what it does                                                               |
 | ----------------- | -------------------------------------------------------------------------- |
-| `--columns …,type,…` | render a `type` column showing `task`, `subtask`, or `ar`              |
+| `--columns …,type,…` | render a `type` column showing `TASK`, `SUBTASK`, or `AR` (kind always wins — an AR nested under a task still renders as `AR`) |
 | `--tree`          | include subtasks as `include_children=true`, widen `--kind` to `task,ar`, indent children under their parent in the title column with `├─` / `└─` |
 | `--with-children` | only set `include_children=true` (no rendering change) — for JSON consumers that want nested `children` arrays |
 
@@ -153,12 +153,12 @@ vn list --with-children --format json
 Sample tree output:
 
 ```
-ID    TYPE     STATUS  PRIORITY  ETA   OWNERS  TITLE
-----  -------  ------  --------  ----  ------  -----------------
-T-1   task     wip     P1        ww18  alice   Refactor parser
-T-1a  subtask  todo                            ├─ add token
-T-1b  subtask  done                            └─ fix lexer
-T-2   ar       open    P2              bob     PR review pending
+ID    TYPE     STATUS  PRIORITY  ETA     OWNERS  TITLE
+----  -------  ------  --------  ------  ------  ---------------
+T-1   TASK     wip     P1        ww18.2  aboli   Refactor parser
+T-1a  SUBTASK  todo              ww18.2          ├─ add token
+T-1b  AR       open              ww18.2          └─ security AR
+T-2   AR       open    P2                aboli   Lone AR
 ```
 
 #### Query language (`-w` / `--where`)

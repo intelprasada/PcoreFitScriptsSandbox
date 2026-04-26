@@ -132,24 +132,29 @@ def _task_to_dict(s: Session, t: Task, *, include_children: bool = False) -> dic
         kids = s.exec(
             select(Task).where(Task.parent_task_id == t.id).order_by(Task.line)
         ).all()
-        out["children"] = [
-            {
+        out["children"] = []
+        for c in kids:
+            eta_attr = next(
+                (a for a in s.exec(
+                    select(TaskAttr).where(TaskAttr.task_id == c.id, TaskAttr.key == "eta")
+                ).all()),
+                None,
+            )
+            out["children"].append({
                 "id": c.id,
                 "task_uuid": c.task_uuid,
                 "slug": c.slug,
                 "title": c.title,
                 "status": c.status,
                 "kind": c.kind,
+                "parent_task_id": c.parent_task_id,
                 "line": c.line,
-                "eta": next(
-                    (a.value_norm for a in s.exec(
-                        select(TaskAttr).where(TaskAttr.task_id == c.id, TaskAttr.key == "eta")
-                    ).all()),
-                    None,
-                ),
-            }
-            for c in kids
-        ]
+                # `eta` keeps its historical value_norm shape for back-compat;
+                # `eta_raw` carries the user-typed string so clients (e.g. vn
+                # --tree) can render parents and children consistently.
+                "eta": eta_attr.value_norm if eta_attr else None,
+                "eta_raw": eta_attr.value if eta_attr else None,
+            })
     return out
 
 
