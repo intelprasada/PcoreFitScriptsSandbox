@@ -153,11 +153,13 @@ def _task_field(task: dict[str, Any], col: str) -> str:
         feats = task.get("features") or []
         return ",".join(feats) if isinstance(feats, list) else str(feats)
     attrs = task.get("attrs") or {}
-    val = attrs.get(col)
+    # Allow @key (matching the -w '@key=val' filter syntax) to address attrs.
+    attr_key = col[1:] if col.startswith("@") else col
+    val = attrs.get(attr_key)
     if val is None:
         # Fall back to top-level keys so e.g. `--columns project,id` works
         # whether `project` lives on the row or in attrs.
-        val = task.get(col, "")
+        val = task.get(attr_key, "")
     if isinstance(val, list):
         val = ",".join(str(v) for v in val)
     return str(val)

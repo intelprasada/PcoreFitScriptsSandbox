@@ -130,7 +130,8 @@ the table by any field with `--group-by area`.
 
 ```bash
 vn list --columns +kind          # add 'kind' to the default set
-vn list --columns -status        # drop 'status'
+vn list --columns=-status        # drop 'status' (use '=' form: argparse
+                                 # would otherwise treat '-status' as a flag)
 vn list --columns +kind,-status  # both at once
 ```
 
@@ -246,8 +247,8 @@ vn show features                  # feature names
 vn show features ic               # task table for feature 'ic'
 vn show attrs                     # attribute keys the DB has ever seen
 vn show notes                     # id / path / etag for every note
-vn show note 42                   # one note (header); add --full for body
-vn show note projects/ww18/foo.md # path also works
+vn show notes 42                  # one note (header); add --full for body
+vn show notes projects/ww18/foo.md  # path also works
 vn show tree                      # indented project → note → task tree
 vn show agenda --owner alice --days 14
 vn show task T-ABC123             # one task as a row
@@ -311,5 +312,7 @@ python3 -m pip install --user -e '.[dev]'
 pytest
 ```
 
-(57 tests across `tests/test_cli.py` and `tests/test_query.py`; pure
-unit tests — no server required, the HTTP client is monkey-patched.)
+(172 tests across `tests/test_cli.py`, `tests/test_query.py`,
+`tests/test_search_drilldown_workflow.py`, and
+`tests/test_readme_examples.py`; pure unit tests — no server required,
+the HTTP client is monkey-patched.)
