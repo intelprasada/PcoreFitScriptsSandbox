@@ -58,7 +58,7 @@ function useTaskPatch(taskId: number) {
 
 // ── StatusChip ────────────────────────────────────────────────────────────────
 
-function StatusChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
+export function StatusChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
   const [status, setStatus] = useState(task.status);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -122,7 +122,7 @@ function StatusChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
 
 // ── PriorityChip ──────────────────────────────────────────────────────────────
 
-function PriorityChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
+export function PriorityChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
   const rawPrio = (task.attrs.priority as string) ?? "";
   const [prio, setPrio] = useState(rawPrio);
   const { mutate, isPending } = useTaskPatch(task.id);
@@ -158,7 +158,7 @@ function PriorityChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
 
 // ── EtaChip ───────────────────────────────────────────────────────────────────
 
-function EtaChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
+export function EtaChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
   const [val, setVal]       = useState(task.eta ?? "");
   const [editing, setEditing] = useState(false);
   const { mutate, isPending } = useTaskPatch(task.id);
@@ -212,7 +212,7 @@ function EtaChip({ task, canWrite }: { task: Task; canWrite: boolean }) {
 
 // ── OwnersChips ───────────────────────────────────────────────────────────────
 
-function OwnersChips({ task, canWrite }: { task: Task; canWrite: boolean }) {
+export function OwnersChips({ task, canWrite }: { task: Task; canWrite: boolean }) {
   const [owners, setOwners]   = useState(task.owners);
   const [adding, setAdding]   = useState(false);
   const [newOwner, setNewOwner] = useState("");
