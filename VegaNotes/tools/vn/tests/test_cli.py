@@ -253,16 +253,22 @@ def test_type_column_classifies_task_subtask_ar(fake_client, capsys):
          "kind": "task", "parent_task_id": 1, "owners": [], "attrs": {}},
         {"id": 3, "task_uuid": "T-3", "title": "ar1", "status": "open",
          "kind": "ar", "parent_task_id": None, "owners": [], "attrs": {}},
+        {"id": 4, "task_uuid": "T-4", "title": "nested ar", "status": "open",
+         "kind": "ar", "parent_task_id": 1, "owners": [], "attrs": {}},
     ]}
     cli.main(["list", "--columns", "id,type,title"])
     out = capsys.readouterr().out
     lines = out.splitlines()
-    # Header + separator + 3 data rows
     assert lines[0].split() == ["ID", "TYPE", "TITLE"]
     body = "\n".join(lines[2:])
-    assert "T-1" in body and " task " in body
-    assert "T-2" in body and " subtask " in body
-    assert "T-3" in body and " ar " in body
+    # Values are upper-cased; AR wins over SUBTASK even when nested.
+    assert "T-1" in body and " TASK " in body
+    assert "T-2" in body and " SUBTASK " in body
+    assert "T-3" in body and " AR " in body
+    # T-4: kind=ar AND parent set → still AR, not SUBTASK.
+    assert "T-4" in body
+    t4_line = next(ln for ln in lines if "T-4" in ln)
+    assert " AR " in t4_line and "SUBTASK" not in t4_line
 
 
 def test_tree_flag_sets_include_children_and_kind(fake_client, capsys):
@@ -299,18 +305,76 @@ def test_tree_renders_subtasks_indented_under_parents(fake_client, capsys):
     ]}
     cli.main(["list", "--tree", "--columns", "id,type,title"])
     out = capsys.readouterr().out
-    # Parent A row, two indented children, then the AR.
     assert "Parent A" in out
     assert "├─ child one" in out
     assert "└─ child two" in out
     assert "Lone AR" in out
-    # Children classify as subtask, AR row classifies as ar.
     parent_idx = out.index("Parent A")
     child_idx = out.index("child one")
     ar_idx = out.index("Lone AR")
     assert parent_idx < child_idx < ar_idx
-    assert "subtask" in out[child_idx - 30: child_idx]
-    assert "ar" in out[ar_idx - 30: ar_idx]
+    # Type column is upper-case now.
+    assert "SUBTASK" in out[child_idx - 30: child_idx]
+    assert " AR " in out[ar_idx - 30: ar_idx]
+
+
+def test_tree_dedupes_subtask_returned_at_top_level_and_as_child(fake_client, capsys):
+    """Issue #100 case 1: API returns the subtask twice (top-level + child)
+    when --tree widens kind to task,ar; flatten must drop the duplicate."""
+    fake_client.responses[("GET", "/api/tasks")] = {"tasks": [
+        {"id": 1, "task_uuid": "T-1", "title": "Parent", "status": "wip",
+         "kind": "task", "parent_task_id": None, "owners": ["aboli"],
+         "attrs": {}, "children": [
+             {"id": 11, "task_uuid": "T-1a", "title": "Subtask", "status": "todo",
+              "kind": "task", "parent_task_id": 1, "eta": "2026-05-04",
+              "eta_raw": "ww18.2"},
+         ]},
+        # Same subtask, also returned at top level because it matched
+        # --owner=aboli and the kind=task,ar filter doesn't drop subtasks.
+        {"id": 11, "task_uuid": "T-1a", "title": "Subtask", "status": "todo",
+         "kind": "task", "parent_task_id": 1, "owners": ["aboli"],
+         "attrs": {"eta": "ww18.2"}},
+    ]}
+    cli.main(["list", "--tree", "--owner", "aboli", "--columns", "id,type,title"])
+    out = capsys.readouterr().out
+    # T-1a appears exactly once, as a child of T-1.
+    assert out.count("T-1a") == 1
+    assert "├─ Subtask" in out or "└─ Subtask" in out
+
+
+def test_tree_keeps_orphan_subtasks_at_top_level(fake_client, capsys):
+    """If a subtask matches the filter but its parent does NOT appear in
+    the result, keep it at the top level so it isn't lost."""
+    fake_client.responses[("GET", "/api/tasks")] = {"tasks": [
+        # Orphan: parent_task_id=99, but task id=99 not in this result.
+        {"id": 11, "task_uuid": "T-1a", "title": "Orphan sub", "status": "todo",
+         "kind": "task", "parent_task_id": 99, "owners": ["aboli"],
+         "attrs": {"eta": "ww18.2"}},
+    ]}
+    cli.main(["list", "--tree", "--owner", "aboli", "--columns", "id,type,title"])
+    out = capsys.readouterr().out
+    assert "T-1a" in out
+    assert "Orphan sub" in out
+
+
+def test_tree_child_eta_renders_raw_value_like_parent(fake_client, capsys):
+    """Issue #100 case 2: child rows used to render normalized
+    (yyyy-mm-dd) eta while parents rendered raw (wwNN); flatten now
+    promotes eta_raw into a synthetic attrs map for parity."""
+    fake_client.responses[("GET", "/api/tasks")] = {"tasks": [
+        {"id": 1, "task_uuid": "T-1", "title": "Parent", "status": "wip",
+         "kind": "task", "parent_task_id": None, "owners": [],
+         "attrs": {"eta": "ww18.2"}, "children": [
+             {"id": 11, "task_uuid": "T-1a", "title": "Sub", "status": "todo",
+              "kind": "task", "parent_task_id": 1,
+              "eta": "2026-05-04", "eta_raw": "ww18.2"},
+         ]},
+    ]}
+    cli.main(["list", "--tree", "--columns", "id,eta,title"])
+    out = capsys.readouterr().out
+    # Both rows show the raw ww-format; the normalized form does not leak.
+    assert out.count("ww18.2") == 2
+    assert "2026-05-04" not in out
 
 
 def test_with_children_passes_param_without_flattening(fake_client, capsys):
