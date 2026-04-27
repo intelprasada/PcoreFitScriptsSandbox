@@ -530,3 +530,39 @@ def test_create_task_does_not_inherit_eof_section_owner(client):
     assert new_lines[0].lstrip().startswith("!task"), (
         f"appended task line should start with `!task`; got: {new_lines[0]!r}"
     )
+
+
+def test_delete_task_removes_line_and_children(client):
+    """DELETE /api/tasks/{ref} — removes the task declaration line and any
+    deeper-indented children (sub-tasks, ARs, #note continuations).  Owner
+    or manager/admin may delete.
+    """
+    notes_dir = DATA / "notes" / "issuedelproj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        "# Weekly\n"
+        "@admin\n"
+        "\t!task #id T-DELME01 Parent task\n"
+        "\t\t!AR #id T-DELME02 child ar\n"
+        "\t\t#note some continuation\n"
+        "\t!task #id T-KEEPME1 Sibling task\n"
+    )
+    rel = "issuedelproj/wk.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    # admin is the requester and is also a user — RBAC passes (admin role).
+    r = client.delete("/api/tasks/T-DELME01", headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "deleted"
+
+    md = (DATA / "notes" / "issuedelproj" / "wk.md").read_text(encoding="utf-8")
+    assert "T-DELME01" not in md
+    assert "T-DELME02" not in md, "child AR should also be removed"
+    assert "some continuation" not in md, "#note continuation should be removed"
+    assert "T-KEEPME1" in md, "sibling at same indent must be preserved"
+
+    # The deleted task should no longer be queryable.
+    r = client.get("/api/tasks/T-DELME01", headers={"Authorization": AUTH})
+    assert r.status_code == 404

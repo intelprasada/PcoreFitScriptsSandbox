@@ -18,7 +18,7 @@ from ..db import get_session
 from ..indexer import reindex_all, reindex_file, remove_path
 from ..markdown_ops import (
     inject_missing_ids, replace_attr, replace_multi_attr, replace_notes,
-    append_note, generate_task_id, existing_ids,
+    append_note, generate_task_id, existing_ids, delete_task_block,
     remove_attr, roll_to_next_week, update_task_status,
     find_ref_row_lines, patch_ref_rows,
 )
@@ -1440,6 +1440,61 @@ def patch_task(
 
     refreshed = s.get(Task, task_id)
     return _task_to_dict(s, refreshed) if refreshed else {"ok": True}
+
+
+@router.delete("/tasks/{task_ref}")
+def delete_task(
+    task_ref: str,
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> dict[str, Any]:
+    """Delete a task by removing its declaration line and any deeper-indented
+    children (sub-tasks, AR items, `#note` continuations) from the source
+    markdown file, then reindexing.
+
+    RBAC: requester must be the task's owner OR a project manager OR admin.
+    """
+    t = _resolve_task(task_ref, s)
+    note = s.get(Note, t.note_id)
+    if not note:
+        raise HTTPException(404, "note not found")
+    project = _project_for_path(note.path)
+    role = _user_role_for_project(s, user, project)
+    owners = s.exec(
+        select(User.name).join(TaskOwner, TaskOwner.user_id == User.id)
+        .where(TaskOwner.task_id == t.id)
+    ).all()
+    is_owner = user in owners
+    # Owner / manager / admin may delete.  Pure project members who don't
+    # own this task cannot.
+    if role == "none" and not is_owner:
+        raise HTTPException(403, "no access to project")
+    if role != "manager" and not is_owner:
+        raise HTTPException(403, "only the task owner or a project manager can delete")
+
+    full = settings.notes_dir / note.path
+    task_uuid = t.task_uuid
+    task_title = t.title
+    task_line = t.line
+
+    with with_file_lock(full):
+        if not full.exists():
+            raise HTTPException(404, "note file not found on disk")
+        disk_md = full.read_text(encoding="utf-8")
+        # Re-anchor by id when possible — line numbers can shift if another
+        # writer touched the file between our cached parse and now.
+        line_to_remove = task_line
+        if task_uuid:
+            for i, raw in enumerate(disk_md.splitlines()):
+                if f"#id {task_uuid}" in raw:
+                    line_to_remove = i
+                    break
+        new_md = delete_task_block(disk_md, line_to_remove)
+        if new_md == disk_md:
+            raise HTTPException(409, "task line not found in current file content")
+        _safe_write_unlocked(full, new_md, notes_dir=settings.notes_dir)
+    reindex_file(full, s)
+    return {"status": "deleted", "task_uuid": task_uuid, "title": task_title}
 
 
 # ---------- users / search -------------------------------------------------
