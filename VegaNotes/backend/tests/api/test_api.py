@@ -486,3 +486,47 @@ def test_create_task_empty_project_returns_422(client):
     )
     assert r.status_code == 422
     assert "no notes" in r.json()["detail"].lower()
+
+
+def test_create_task_does_not_inherit_eof_section_owner(client):
+    """Issue #121 — a new task appended to a file whose EOF sits under an
+    `@otheruser` section must NOT inherit that user as a co-owner.  The
+    blank-line separator before the appended task line breaks the parser's
+    section-context inheritance.  Also: the appended line must not start
+    with a `- ` bullet prefix.
+    """
+    notes_dir = DATA / "notes" / "issue121proj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed_md = (
+        "# Weekly\n"
+        "@yongxi\n"
+        "\t#task T-EXISTING1 some prior task\n"
+    )
+    rel = "issue121proj/wk01.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed_md},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/tasks",
+        json={"title": "Aboli's new task", "project": "issue121proj"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 201, r.text
+    created = r.json()
+    # Owners must be exactly the requester, not yongxi from the EOF section.
+    assert created["owners"] == ["admin"], (
+        f"expected only admin as owner, got {created['owners']!r} "
+        "(EOF @yongxi section bled into context — see issue #121)"
+    )
+
+    md = (DATA / "notes" / "issue121proj" / "wk01.md").read_text(encoding="utf-8")
+    # The appended line must use the bare `!task ...` shape, not `- !task ...`.
+    new_lines = [ln for ln in md.splitlines() if created["task_uuid"] in ln]
+    assert len(new_lines) == 1, f"expected one line carrying the new id, got {new_lines!r}"
+    assert not new_lines[0].lstrip().startswith("- "), (
+        f"appended task line must not have `- ` bullet prefix; got: {new_lines[0]!r}"
+    )
+    assert new_lines[0].lstrip().startswith("!task"), (
+        f"appended task line should start with `!task`; got: {new_lines[0]!r}"
+    )
