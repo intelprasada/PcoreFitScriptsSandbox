@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type Task } from "../../api/client";
 import { TaskCard } from "../Card/TaskCard";
 import { TaskEditPopover } from "../Tasks/TaskEditPopover";
+import { NewTaskComposer } from "../Tasks/NewTaskComposer";
 import { useUI, filtersToParams } from "../../store/ui";
 import { useFontScale, type FontScale } from "../../store/fontScale";
 
@@ -24,6 +25,7 @@ const COLUMNS = ["todo", "in-progress", "blocked", "done"] as const;
 export function KanbanBoard() {
   const { filters } = useUI();
   const [editing, setEditing] = useState<Task | null>(null);
+  const [composerColumn, setComposerColumn] = useState<string | null>(null);
   const { scale, setScale } = useFontScale();
   const { data } = useQuery({
     queryKey: ["tasks", filters, "kanban"],
@@ -66,9 +68,29 @@ export function KanbanBoard() {
       <div className="flex gap-3 px-4 pb-4 overflow-x-auto">
         {COLUMNS.map((c) => (
           <div key={c} className="flex-1 min-w-[260px] rounded-lg p-3 bg-slate-100">
-            <div className="text-xs uppercase tracking-wide text-slate-500 mb-2 flex justify-between">
-              <span>{c}</span><span>{grouped[c].length}</span>
+            <div className="text-xs uppercase tracking-wide text-slate-500 mb-2 flex items-center justify-between">
+              <span>{c}</span>
+              <span className="flex items-center gap-1">
+                <span>{grouped[c].length}</span>
+                <button
+                  onClick={() => setComposerColumn(composerColumn === c ? null : c)}
+                  title={`Add task to ${c}`}
+                  className="w-5 h-5 rounded text-slate-400 hover:text-sky-700 hover:bg-white flex items-center justify-center text-base leading-none"
+                >
+                  +
+                </button>
+              </span>
             </div>
+            {composerColumn === c && (
+              <div className="mb-2">
+                <NewTaskComposer
+                  defaultStatus={c}
+                  defaultProject={filters.project}
+                  onClose={() => setComposerColumn(null)}
+                  compact
+                />
+              </div>
+            )}
             <div className="space-y-2">
               {grouped[c].map((t) => (
                 <TaskCard key={t.id} task={t} onOpen={setEditing} />
