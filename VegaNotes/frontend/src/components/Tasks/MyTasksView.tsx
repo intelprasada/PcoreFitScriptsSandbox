@@ -1,11 +1,14 @@
 /**
- * "My Tasks" view — shows all tasks owned by the current user.
+ * "My Tasks" view — shows all tasks and AR items owned by the current user.
  *
- * Tasks are displayed in a compact table grouped by status, priority, or
+ * Items are displayed in a compact table grouped by status, priority, or
  * project (user-togglable).  Each row carries interactive QuickChips so the
  * user can change status, priority, ETA and owners without opening the full
  * TaskEditPopover.  Clicking the row title still opens the popover for note /
  * features edits.
+ *
+ * AR items (kind="ar") appear alongside regular tasks.  They show an amber
+ * "AR" badge and a parent-task breadcrumb chip for context.
  */
 
 import { useMemo, useState } from "react";
@@ -78,16 +81,44 @@ function groupTasks(tasks: Task[], by: GroupBy): Group[] {
 // ── TaskRow ───────────────────────────────────────────────────────────────────
 
 function TaskRow({ task, onOpen }: { task: Task; onOpen: (t: Task) => void }) {
+  const isAr = task.kind === "ar";
+
   return (
     <tr
       onClick={() => onOpen(task)}
       className="group hover:bg-sky-50/40 cursor-pointer border-b border-slate-100 last:border-0 transition-colors"
     >
-      {/* Title + project/feature chips */}
+      {/* Title + AR badge + parent breadcrumb + project/feature chips */}
       <td className="py-2.5 pl-4 pr-2 min-w-[200px]">
-        <div className="font-medium text-slate-800 text-sm leading-snug group-hover:text-sky-800 transition-colors">
-          {task.title}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {isAr && (
+            <span
+              title="Action Required item"
+              className="chip text-[10px] font-bold bg-amber-50 border border-amber-300 text-amber-800 px-1.5 py-0.5"
+            >
+              AR
+            </span>
+          )}
+          <span className="font-medium text-slate-800 text-sm leading-snug group-hover:text-sky-800 transition-colors">
+            {task.title}
+          </span>
         </div>
+
+        {/* Parent breadcrumb for AR items / subtasks */}
+        {task.parent_task_id != null && (task.parent_title || task.parent_uuid) && (
+          <div className="flex items-center gap-1 mt-0.5">
+            <span className="text-slate-300 text-[10px]">↑</span>
+            {task.parent_uuid && (
+              <span className="chip font-mono text-[10px] bg-slate-50 border border-slate-200 text-slate-400 px-1.5 py-0">
+                {task.parent_uuid}
+              </span>
+            )}
+            {task.parent_title && (
+              <span className="text-[11px] text-slate-400 truncate max-w-[220px]">{task.parent_title}</span>
+            )}
+          </div>
+        )}
+
         {(task.projects.length > 0 || task.features.length > 0) && (
           <div className="flex flex-wrap gap-1 mt-1">
             {task.projects.map((p) => (
@@ -138,7 +169,7 @@ function GroupSection({ group, onOpen }: { group: Group; onOpen: (t: Task) => vo
         className={`w-full flex items-center gap-2 px-4 py-2 border-b text-left ${group.headerCls} hover:opacity-90 transition-opacity`}
       >
         <span className="text-xs font-bold uppercase tracking-wider">{group.label}</span>
-        <span className="text-xs opacity-60">{group.tasks.length} task{group.tasks.length === 1 ? "" : "s"}</span>
+        <span className="text-xs opacity-60">{group.tasks.length} item{group.tasks.length === 1 ? "" : "s"}</span>
         <span className="ml-auto text-xs opacity-50">{collapsed ? "▸" : "▾"}</span>
       </button>
 
@@ -181,7 +212,7 @@ export function MyTasksView() {
     queryKey: ["my-tasks", me?.name, hideDone],
     queryFn: () =>
       me?.name
-        ? api.tasks({ owner: me.name, hide_done: hideDone, top_level_only: true, include_children: false })
+        ? api.tasks({ owner: me.name, hide_done: hideDone, top_level_only: false, include_children: false })
         : Promise.resolve(null),
     enabled: !!me?.name,
   });
@@ -207,7 +238,7 @@ export function MyTasksView() {
           <div>
             <h1 className="text-xl font-semibold text-slate-800">My Tasks</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Showing tasks owned by{" "}
+              Showing tasks & ARs owned by{" "}
               <span className="font-medium text-slate-700">@{me.name}</span>
               {" · "}
               <span className="text-slate-700 font-medium">{totalOpen}</span> open
