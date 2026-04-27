@@ -41,6 +41,7 @@ export function TaskEditPopover({ task, onClose }: Props) {
   const [features, setFeatures] = useState(initialFeatures);
   const [newNote, setNewNote] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -91,6 +92,31 @@ export function TaskEditPopover({ task, onClose }: Props) {
       } else {
         setErr(String(e?.message ?? e));
       }
+    },
+  });
+
+  const del = useMutation({
+    mutationFn: () => api.deleteTask(task.task_uuid ?? task.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      qc.invalidateQueries({ queryKey: ["my-tasks"] });
+      qc.invalidateQueries({ queryKey: ["agenda"] });
+      qc.invalidateQueries({ queryKey: ["note"] });
+      qc.invalidateQueries({ queryKey: ["features"] });
+      qc.invalidateQueries({ queryKey: ["tree"] });
+      onClose();
+    },
+    onError: (e: any) => {
+      if (e instanceof ApiError) {
+        if (e.status === 403) {
+          setErr("Permission denied: only the task owner, a project manager, or an admin can delete this task.");
+        } else {
+          setErr(`${e.status}: ${e.detail}`);
+        }
+      } else {
+        setErr(String(e?.message ?? e));
+      }
+      setConfirmDelete(false);
     },
   });
 
@@ -186,13 +212,33 @@ export function TaskEditPopover({ task, onClose }: Props) {
 
           {err && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded p-2">{err}</div>}
 
-          <div className="flex justify-end gap-2 pt-2 border-t">
-            <button type="button" onClick={onClose}
-              className="rounded border px-3 py-1 text-sm">cancel</button>
-            <button type="submit" disabled={save.isPending}
-              className="rounded bg-sky-600 text-white px-3 py-1 text-sm disabled:opacity-50">
-              {save.isPending ? "saving…" : "save"}
-            </button>
+          <div className="flex justify-between items-center gap-2 pt-2 border-t">
+            {confirmDelete ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-rose-700">Delete this task and all its children?</span>
+                <button type="button" onClick={() => setConfirmDelete(false)}
+                  className="rounded border px-2 py-0.5">no</button>
+                <button type="button" onClick={() => { setErr(null); del.mutate(); }}
+                  disabled={del.isPending}
+                  className="rounded bg-rose-600 text-white px-2 py-0.5 disabled:opacity-50">
+                  {del.isPending ? "deleting…" : "yes, delete"}
+                </button>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setConfirmDelete(true)}
+                className="text-xs text-rose-600 hover:text-rose-800 underline"
+                title="Remove this task line (and any sub-tasks / ARs / #note continuations) from the source .md file">
+                Delete task
+              </button>
+            )}
+            <div className="flex gap-2">
+              <button type="button" onClick={onClose}
+                className="rounded border px-3 py-1 text-sm">cancel</button>
+              <button type="submit" disabled={save.isPending}
+                className="rounded bg-sky-600 text-white px-3 py-1 text-sm disabled:opacity-50">
+                {save.isPending ? "saving…" : "save"}
+              </button>
+            </div>
           </div>
         </form>
       </div>

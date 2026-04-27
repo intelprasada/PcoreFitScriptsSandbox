@@ -233,6 +233,31 @@ def _extract_task_id(line: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def delete_task_block(md: str, task_line_no: int) -> str:
+    """Remove a task declaration line **and every deeper-indented line that
+    follows it** (sub-tasks, AR children, `#note` continuations).
+
+    Stops at the first subsequent line whose indent is ≤ the task line's
+    indent, OR at the first blank line (which the parser already treats as a
+    section boundary).  The blank line itself is kept so surrounding
+    formatting remains stable.
+    """
+    lines = md.splitlines(keepends=True)
+    if task_line_no < 0 or task_line_no >= len(lines):
+        raise ValueError(f"line {task_line_no} out of range")
+    task_raw = lines[task_line_no]
+    task_indent = _line_indent(task_raw)
+    end = task_line_no + 1
+    while end < len(lines):
+        raw = lines[end]
+        if not raw.strip():
+            break
+        if _line_indent(raw) <= task_indent:
+            break
+        end += 1
+    return "".join(lines[:task_line_no] + lines[end:])
+
+
 def rewrite_tasks_as_refs(md: str) -> str:
     """Convert every surviving ``!task``/``!AR`` declaration line (that has an
     ``#id`` token) into a reference row, preserving any sibling attrs.

@@ -433,3 +433,136 @@ def test_ref_row_owner_syncs_taskowner(client):
     r = client.get("/api/tasks/T-REFOWN1", headers={"Authorization": AUTH})
     assert r.status_code == 200
     assert "bob" in r.json()["owners"], "bob must appear in task owners after ref-row override"
+
+
+def test_create_task_appends_to_project_note(client):
+    """Issue #63 — POST /api/tasks creates a task in the most recently
+    modified note of the given project, with the requester as default owner.
+    """
+    notes_dir = DATA / "notes" / "issue63proj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = notes_dir / "wk01.md"
+    seed.write_text("# Weekly\n", encoding="utf-8")
+    r = client.put("/api/notes", json={"path": "issue63proj/wk01.md", "body_md": "# Weekly\n"},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/tasks",
+        json={"title": "Triage build break", "status": "in-progress",
+              "project": "issue63proj", "priority": "P1"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 201, r.text
+    created = r.json()
+    assert created["title"] == "Triage build break"
+    assert created["status"] == "in-progress"
+    assert "admin" in created["owners"]
+    assert created["task_uuid"] and created["task_uuid"].startswith("T-")
+    assert created["note_path"] == "issue63proj/wk01.md"
+
+    # The bullet should now exist in the markdown file.
+    md = (DATA / "notes" / "issue63proj" / "wk01.md").read_text(encoding="utf-8")
+    assert "Triage build break" in md
+    assert created["task_uuid"] in md
+
+
+def test_create_task_no_destination_returns_422(client):
+    r = client.post(
+        "/api/tasks",
+        json={"title": "no destination"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 422
+
+
+def test_create_task_empty_project_returns_422(client):
+    notes_dir = DATA / "notes" / "issue63empty"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    r = client.post(
+        "/api/tasks",
+        json={"title": "x", "project": "issue63empty"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 422
+    assert "no notes" in r.json()["detail"].lower()
+
+
+def test_create_task_does_not_inherit_eof_section_owner(client):
+    """Issue #121 — a new task appended to a file whose EOF sits under an
+    `@otheruser` section must NOT inherit that user as a co-owner.  The
+    blank-line separator before the appended task line breaks the parser's
+    section-context inheritance.  Also: the appended line must not start
+    with a `- ` bullet prefix.
+    """
+    notes_dir = DATA / "notes" / "issue121proj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed_md = (
+        "# Weekly\n"
+        "@yongxi\n"
+        "\t#task T-EXISTING1 some prior task\n"
+    )
+    rel = "issue121proj/wk01.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed_md},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/tasks",
+        json={"title": "Aboli's new task", "project": "issue121proj"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 201, r.text
+    created = r.json()
+    # Owners must be exactly the requester, not yongxi from the EOF section.
+    assert created["owners"] == ["admin"], (
+        f"expected only admin as owner, got {created['owners']!r} "
+        "(EOF @yongxi section bled into context — see issue #121)"
+    )
+
+    md = (DATA / "notes" / "issue121proj" / "wk01.md").read_text(encoding="utf-8")
+    # The appended line must use the bare `!task ...` shape, not `- !task ...`.
+    new_lines = [ln for ln in md.splitlines() if created["task_uuid"] in ln]
+    assert len(new_lines) == 1, f"expected one line carrying the new id, got {new_lines!r}"
+    assert not new_lines[0].lstrip().startswith("- "), (
+        f"appended task line must not have `- ` bullet prefix; got: {new_lines[0]!r}"
+    )
+    assert new_lines[0].lstrip().startswith("!task"), (
+        f"appended task line should start with `!task`; got: {new_lines[0]!r}"
+    )
+
+
+def test_delete_task_removes_line_and_children(client):
+    """DELETE /api/tasks/{ref} — removes the task declaration line and any
+    deeper-indented children (sub-tasks, ARs, #note continuations).  Owner
+    or manager/admin may delete.
+    """
+    notes_dir = DATA / "notes" / "issuedelproj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        "# Weekly\n"
+        "@admin\n"
+        "\t!task #id T-DELME01 Parent task\n"
+        "\t\t!AR #id T-DELME02 child ar\n"
+        "\t\t#note some continuation\n"
+        "\t!task #id T-KEEPME1 Sibling task\n"
+    )
+    rel = "issuedelproj/wk.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    # admin is the requester and is also a user — RBAC passes (admin role).
+    r = client.delete("/api/tasks/T-DELME01", headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "deleted"
+
+    md = (DATA / "notes" / "issuedelproj" / "wk.md").read_text(encoding="utf-8")
+    assert "T-DELME01" not in md
+    assert "T-DELME02" not in md, "child AR should also be removed"
+    assert "some continuation" not in md, "#note continuation should be removed"
+    assert "T-KEEPME1" in md, "sibling at same indent must be preserved"
+
+    # The deleted task should no longer be queryable.
+    r = client.get("/api/tasks/T-DELME01", headers={"Authorization": AUTH})
+    assert r.status_code == 404
