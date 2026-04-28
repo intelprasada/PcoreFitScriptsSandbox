@@ -484,12 +484,12 @@ def _build_task_line(
     *, kind: str, task_id: str, title: str, owners: list[str],
     priority: Optional[str], eta: Optional[str], features: list[str],
 ) -> str:
-    """Compose a single bullet markdown line for a new task.
-
-    Shape:  `- !task #id T-XXXX <title> @o1 @o2 #priority P1 #eta YYYY-MM-DD #feature x`
+    """Compose a single bare markdown line for a new task — no leading bullet
+    so the appended block matches the convention used in existing notes
+    (`!task #id T-XXX <title> @owner ...`).  See issues #63 and #121.
     """
     keyword = "!AR" if kind == "ar" else "!task"
-    parts = [f"- {keyword} #id {task_id} {title.strip()}"]
+    parts = [f"{keyword} #id {task_id} {title.strip()}"]
     for o in owners:
         n = o.strip().lstrip("@")
         if n:
@@ -550,9 +550,15 @@ def create_task(
             priority=body.priority, eta=body.eta,
             features=body.features or [],
         )
-        # Append at end-of-file with a separating newline if needed.
-        sep = "" if (not cur_md or cur_md.endswith("\n")) else "\n"
-        new_md = f"{cur_md}{sep}{line}"
+        # Append at end-of-file with a separating blank line.  The blank line
+        # is critical: the parser uses blank lines as section-context
+        # boundaries, so without it the new task would inherit the owner /
+        # project of whatever section happened to live at EOF (issue #121).
+        if not cur_md:
+            new_md = line
+        else:
+            sep = "" if cur_md.endswith("\n") else "\n"
+            new_md = f"{cur_md}{sep}\n{line}"
         _safe_write_unlocked(full, new_md, notes_dir=settings.notes_dir)
     note = reindex_file(full, s)
 
