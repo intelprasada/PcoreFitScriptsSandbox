@@ -88,6 +88,26 @@ class Link(SQLModel, table=True):
     kind: str = "task"  # task | link | blocks | blocked_by
 
 
+class ActivityEvent(SQLModel, table=True):
+    """Append-only log of user actions for gamification stats / badges.
+
+    One row per atomic event (task close, note edit, …). The actor is the
+    authenticated user that issued the API call — not the task owner. All
+    reads are scoped to the calling user via ``/api/me/activity``; this
+    table is never exposed cross-user.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    kind: str = Field(index=True)
+    # Free-form reference for the event subject (e.g. "T-ABC123" or note
+    # path). Indexed so we can ask "all events touching this task".
+    ref: str = Field(default="", index=True)
+    ts: datetime = Field(default_factory=datetime.utcnow, index=True)
+    # JSON blob with event-specific fields (e.g. {"from":"todo","to":"done"}).
+    # Source-of-truth for badge logic; intentionally untyped.
+    meta_json: str = ""
+
+
 class ProjectMember(SQLModel, table=True):
     """RBAC: which users can access a project (folder under notes/) and at what role.
 

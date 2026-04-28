@@ -65,6 +65,15 @@ def init_db() -> None:
             "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts "
             "USING fts5(title, body_md);"
         ))
+        # Composite index for the gamification activity log: per-user time
+        # range scans dominate the read pattern (`/api/me/activity`,
+        # streak/stats math). Single-column indexes on user_id and ts
+        # already exist via the model definition; this composite makes the
+        # common WHERE user_id=? AND ts>=? query a single index seek.
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_activityevent_user_ts "
+            "ON activityevent(user_id, ts);"
+        ))
         # Bidirectional view over `link` (treats every edge as undirected).
         conn.execute(text(
             "CREATE VIEW IF NOT EXISTS links_bidir AS "
