@@ -617,3 +617,70 @@ def test_create_ar_under_task_inserts_inside_block(client):
     parent_payload = r.json()
     child_titles = [c["title"] for c in parent_payload.get("children", [])]
     assert "newly added AR" in child_titles
+
+
+def test_add_note_rejects_ar_or_task_token(client):
+    """PATCH /api/tasks/{id} with `add_note` text starting with `!AR` or
+    `!task` is refused — those payloads were silently being filed as #note
+    continuations and the parser couldn't recover them as task lines.
+    See issue #125."""
+    notes_dir = DATA / "notes" / "guardproj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        "# Weekly\n"
+        "@admin\n"
+        "\t!task #id T-GUARD001 Parent task\n"
+    )
+    rel = "guardproj/wk.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    for bad in ("!AR follow up", "!ar fix this", "  !task new task", "- !AR x"):
+        r = client.patch(
+            "/api/tasks/T-GUARD001",
+            json={"add_note": bad},
+            headers={"Authorization": AUTH},
+        )
+        assert r.status_code == 400, f"expected 400 for {bad!r}, got {r.status_code}: {r.text}"
+        assert "Add an AR" in r.json()["detail"] or "AR" in r.json()["detail"]
+
+    # Plain note text still works.
+    r = client.patch(
+        "/api/tasks/T-GUARD001",
+        json={"add_note": "ordinary note that mentions !AR in the middle"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_add_ar_strips_redundant_ar_prefix(client):
+    """If a user types `!AR foo` into the AR title field (because they
+    remember the markdown keyword), the endpoint should strip the leading
+    `!AR ` so the resulting line is `!AR #id T-XXX foo` (not double-bang).
+    See issue #125."""
+    notes_dir = DATA / "notes" / "stripproj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        "# Weekly\n"
+        "@admin\n"
+        "\t!task #id T-STRIP001 Parent task\n"
+    )
+    rel = "stripproj/wk.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/tasks/T-STRIP001/ars",
+        json={"title": "!AR my action item"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["title"] == "my action item"
+
+    md = (DATA / "notes" / "stripproj" / "wk.md").read_text(encoding="utf-8")
+    # No double-bang in the file.
+    assert "!AR #id" in md
+    assert "!AR my action item" not in md, "redundant prefix should have been stripped"
+    assert "my action item" in md

@@ -611,6 +611,17 @@ def create_ar_under_task(
     title = (body.title or "").strip()
     if not title:
         raise HTTPException(400, "title is required")
+    # Strip a redundant leading bang token if the user typed the keyword
+    # explicitly (e.g. "!AR foo bar").  The line builder always prepends
+    # `!AR`, so without this we'd emit `!AR #id T-XXX !AR foo bar`.
+    # See issue #125.
+    low = title.lower()
+    if low.startswith("!ar "):
+        title = title[4:].strip()
+    elif low.startswith("!task "):
+        title = title[6:].strip()
+    if not title:
+        raise HTTPException(400, "title is required")
 
     parent = _resolve_task(task_ref, s)
     note = s.get(Note, parent.note_id)
@@ -1453,6 +1464,20 @@ def patch_task(
         md = replace_multi_attr(md, t.line, "feature", cleaned)
         changed = True
     if body.add_note is not None and body.add_note.strip():
+        # Guardrail: refuse note text that looks like a task / AR declaration.
+        # Persisting it as a `#note` continuation would silently lose the
+        # intended structure (the parser doesn't recognize `#note !AR ...`
+        # as a task line).  See issue #125.
+        for raw_line in body.add_note.splitlines():
+            stripped = raw_line.lstrip().lstrip("-*+ ").lstrip()
+            low = stripped.lower()
+            if low.startswith(("!ar ", "!ar\t", "!task ", "!task\t")) or low in {"!ar", "!task"}:
+                raise HTTPException(
+                    400,
+                    "note text starts with `!AR` or `!task` — that won't be "
+                    "recognized as a task. Use the dedicated 'Add an AR' "
+                    "field (POST /api/tasks/{ref}/ars) for action requests.",
+                )
         md = append_note(md, t.line, body.add_note)
         changed = True
     elif body.notes is not None:

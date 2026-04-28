@@ -209,22 +209,6 @@ export function TaskEditPopover({ task, onClose }: Props) {
               placeholder="auth, billing" />
           </Field>
 
-          <Field label="Notes — history" hint={noteHistory.length === 0 ? "No prior notes." : `${noteHistory.length} entr${noteHistory.length === 1 ? "y" : "ies"}, oldest first. Read-only — entries are append-only and preserved verbatim from the .md file.`}>
-            {noteHistory.length === 0 ? (
-              <div className="text-xs italic text-slate-400 border border-dashed rounded p-2">
-                (none)
-              </div>
-            ) : (
-              <ul className="border rounded divide-y bg-slate-50 max-h-32 overflow-y-auto">
-                {noteHistory.map((line, i) => (
-                  <li key={i} className="px-2 py-1 text-xs font-mono text-slate-700 whitespace-pre-wrap break-words">
-                    {line}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Field>
-
           {task.kind === "task" && (
             <Field label="Add an AR (action request)" hint="Inserted as an `!AR` child line under this task in the .md file. Inherits the same project context. Press Enter to add — the popover stays open so you can add several.">
               <div className="flex gap-2">
@@ -257,7 +241,25 @@ export function TaskEditPopover({ task, onClose }: Props) {
             </Field>
           )}
 
-          <Field label="Add a note" hint="Appended as a new `#note` continuation line under the task. Auto-prefixed with timestamp + your @handle. Newlines = multiple entries. Existing notes are NOT overwritten.">
+          <Field label="Notes — history" hint={noteHistory.length === 0 ? "No prior notes." : `${noteHistory.length} entr${noteHistory.length === 1 ? "y" : "ies"}, oldest first. Read-only — entries are append-only and preserved verbatim from the .md file.`}>
+            {noteHistory.length === 0 ? (
+              <div className="text-xs italic text-slate-400 border border-dashed rounded p-2">
+                (none)
+              </div>
+            ) : (
+              <ul className="border rounded divide-y bg-slate-50 max-h-32 overflow-y-auto">
+                {noteHistory.map((line, i) => (
+                  <li key={i} className="px-2 py-1 text-xs font-mono text-slate-700 whitespace-pre-wrap break-words">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Field>
+
+          <Field label="Add a note" hint={task.kind === "task"
+            ? "Appended as a new `#note` continuation line. Auto-prefixed with timestamp + your @handle. For action items, use the 'Add an AR' field above instead — typing `!AR …` here will be rejected."
+            : "Appended as a new `#note` continuation line. Auto-prefixed with timestamp + your @handle."}>
             <textarea
               className="border rounded px-2 py-1 text-sm w-full font-mono"
               rows={3}
