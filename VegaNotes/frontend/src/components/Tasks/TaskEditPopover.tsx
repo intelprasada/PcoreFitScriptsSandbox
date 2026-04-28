@@ -40,6 +40,7 @@ export function TaskEditPopover({ task, onClose }: Props) {
   const [owners, setOwners] = useState(initialOwners);
   const [features, setFeatures] = useState(initialFeatures);
   const [newNote, setNewNote] = useState("");
+  const [newArTitle, setNewArTitle] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -120,6 +121,30 @@ export function TaskEditPopover({ task, onClose }: Props) {
     },
   });
 
+  const addAr = useMutation({
+    mutationFn: (title: string) =>
+      api.addAr(task.task_uuid ?? task.id, { title }),
+    onSuccess: () => {
+      setNewArTitle("");
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      qc.invalidateQueries({ queryKey: ["my-tasks"] });
+      qc.invalidateQueries({ queryKey: ["agenda"] });
+      qc.invalidateQueries({ queryKey: ["note"] });
+      qc.invalidateQueries({ queryKey: ["features"] });
+    },
+    onError: (e: any) => {
+      if (e instanceof ApiError) {
+        if (e.status === 403) {
+          setErr("Permission denied: only the parent task's owner, a project manager, or an admin can add an AR.");
+        } else {
+          setErr(`${e.status}: ${e.detail}`);
+        }
+      } else {
+        setErr(String(e?.message ?? e));
+      }
+    },
+  });
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
@@ -184,6 +209,38 @@ export function TaskEditPopover({ task, onClose }: Props) {
               placeholder="auth, billing" />
           </Field>
 
+          {task.kind === "task" && (
+            <Field label="Add an AR (action request)" hint="Inserted as an `!AR` child line under this task in the .md file. Inherits the same project context. Press Enter to add — the popover stays open so you can add several.">
+              <div className="flex gap-2">
+                <input
+                  className="border rounded px-2 py-1 text-sm flex-1"
+                  value={newArTitle}
+                  onChange={(e) => setNewArTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newArTitle.trim() && !addAr.isPending) {
+                      e.preventDefault();
+                      setErr(null);
+                      addAr.mutate(newArTitle.trim());
+                    }
+                  }}
+                  placeholder="e.g. follow up with @bob on perf numbers"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!newArTitle.trim() || addAr.isPending) return;
+                    setErr(null);
+                    addAr.mutate(newArTitle.trim());
+                  }}
+                  disabled={!newArTitle.trim() || addAr.isPending}
+                  className="rounded bg-amber-600 text-white px-3 py-1 text-xs disabled:opacity-50"
+                >
+                  {addAr.isPending ? "adding…" : "+ AR"}
+                </button>
+              </div>
+            </Field>
+          )}
+
           <Field label="Notes — history" hint={noteHistory.length === 0 ? "No prior notes." : `${noteHistory.length} entr${noteHistory.length === 1 ? "y" : "ies"}, oldest first. Read-only — entries are append-only and preserved verbatim from the .md file.`}>
             {noteHistory.length === 0 ? (
               <div className="text-xs italic text-slate-400 border border-dashed rounded p-2">
@@ -200,7 +257,9 @@ export function TaskEditPopover({ task, onClose }: Props) {
             )}
           </Field>
 
-          <Field label="Add a note" hint="Appended as a new `#note` continuation line under the task. Auto-prefixed with timestamp + your @handle. Newlines = multiple entries. Existing notes are NOT overwritten.">
+          <Field label="Add a note" hint={task.kind === "task"
+            ? "Appended as a new `#note` continuation line. Auto-prefixed with timestamp + your @handle. For action items, use the 'Add an AR' field above instead — typing `!AR …` here will be rejected."
+            : "Appended as a new `#note` continuation line. Auto-prefixed with timestamp + your @handle."}>
             <textarea
               className="border rounded px-2 py-1 text-sm w-full font-mono"
               rows={3}

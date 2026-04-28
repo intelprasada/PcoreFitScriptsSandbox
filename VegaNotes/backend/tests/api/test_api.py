@@ -566,3 +566,121 @@ def test_delete_task_removes_line_and_children(client):
     # The deleted task should no longer be queryable.
     r = client.get("/api/tasks/T-DELME01", headers={"Authorization": AUTH})
     assert r.status_code == 404
+
+
+def test_create_ar_under_task_inserts_inside_block(client):
+    """POST /api/tasks/{ref}/ars — appends an AR child line inside the parent's
+    block (after any existing children, before the next blank-line / sibling).
+    The AR must be reachable as a child in the parent's `include_children`
+    payload."""
+    notes_dir = DATA / "notes" / "araddproj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        "# Weekly\n"
+        "@admin\n"
+        "\t!task #id T-PARENT01 Parent task\n"
+        "\t\t!AR #id T-EXIST001 existing ar\n"
+        "\n"
+        "\t!task #id T-SIB00001 Sibling task\n"
+    )
+    rel = "araddproj/wk.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/tasks/T-PARENT01/ars",
+        json={"title": "newly added AR"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 201, r.text
+    new_ar = r.json()
+    assert new_ar["kind"] == "ar"
+    assert new_ar["title"] == "newly added AR"
+    assert new_ar["parent_task_uuid"] == "T-PARENT01"
+
+    md = (DATA / "notes" / "araddproj" / "wk.md").read_text(encoding="utf-8")
+    # New AR sits between the existing AR and the blank line — same indent as
+    # the existing one.  Sibling task downstream is untouched.
+    lines = md.splitlines()
+    parent_idx = next(i for i, l in enumerate(lines) if "T-PARENT01" in l)
+    existing_idx = next(i for i, l in enumerate(lines) if "T-EXIST001" in l)
+    new_idx = next(i for i, l in enumerate(lines) if "newly added AR" in l)
+    sibling_idx = next(i for i, l in enumerate(lines) if "T-SIB00001" in l)
+    assert parent_idx < existing_idx < new_idx < sibling_idx
+
+    # The new AR must show up in the parent's children when fetched with
+    # include_children — that's how the Kanban + My Tasks dropdown picks it up.
+    r = client.get("/api/tasks/T-PARENT01?include_children=true",
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+    parent_payload = r.json()
+    child_titles = [c["title"] for c in parent_payload.get("children", [])]
+    assert "newly added AR" in child_titles
+
+
+def test_add_note_rejects_ar_or_task_token(client):
+    """PATCH /api/tasks/{id} with `add_note` text starting with `!AR` or
+    `!task` is refused — those payloads were silently being filed as #note
+    continuations and the parser couldn't recover them as task lines.
+    See issue #125."""
+    notes_dir = DATA / "notes" / "guardproj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        "# Weekly\n"
+        "@admin\n"
+        "\t!task #id T-GUARD001 Parent task\n"
+    )
+    rel = "guardproj/wk.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    for bad in ("!AR follow up", "!ar fix this", "  !task new task", "- !AR x"):
+        r = client.patch(
+            "/api/tasks/T-GUARD001",
+            json={"add_note": bad},
+            headers={"Authorization": AUTH},
+        )
+        assert r.status_code == 400, f"expected 400 for {bad!r}, got {r.status_code}: {r.text}"
+        assert "Add an AR" in r.json()["detail"] or "AR" in r.json()["detail"]
+
+    # Plain note text still works.
+    r = client.patch(
+        "/api/tasks/T-GUARD001",
+        json={"add_note": "ordinary note that mentions !AR in the middle"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_add_ar_strips_redundant_ar_prefix(client):
+    """If a user types `!AR foo` into the AR title field (because they
+    remember the markdown keyword), the endpoint should strip the leading
+    `!AR ` so the resulting line is `!AR #id T-XXX foo` (not double-bang).
+    See issue #125."""
+    notes_dir = DATA / "notes" / "stripproj"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        "# Weekly\n"
+        "@admin\n"
+        "\t!task #id T-STRIP001 Parent task\n"
+    )
+    rel = "stripproj/wk.md"
+    r = client.put("/api/notes", json={"path": rel, "body_md": seed},
+                   headers={"Authorization": AUTH})
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/api/tasks/T-STRIP001/ars",
+        json={"title": "!AR my action item"},
+        headers={"Authorization": AUTH},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["title"] == "my action item"
+
+    md = (DATA / "notes" / "stripproj" / "wk.md").read_text(encoding="utf-8")
+    # No double-bang in the file.
+    assert "!AR #id" in md
+    assert "!AR my action item" not in md, "redundant prefix should have been stripped"
+    assert "my action item" in md

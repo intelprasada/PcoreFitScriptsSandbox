@@ -19,6 +19,7 @@ from ..indexer import reindex_all, reindex_file, remove_path
 from ..markdown_ops import (
     inject_missing_ids, replace_attr, replace_multi_attr, replace_notes,
     append_note, generate_task_id, existing_ids, delete_task_block,
+    insert_ar_under_task,
     remove_attr, roll_to_next_week, update_task_status,
     find_ref_row_lines, patch_ref_rows,
 )
@@ -581,7 +582,108 @@ def create_task(
     return _task_to_dict(s, created, include_children=True) | {"note_path": rel}
 
 
-# ---------- parse preview ---------------------------------------------------
+class ArCreate(BaseModel):
+    title: str
+    owners: Optional[list[str]] = None
+    priority: Optional[str] = None
+    eta: Optional[str] = None
+    features: Optional[list[str]] = None
+
+
+@router.post("/tasks/{task_ref}/ars", status_code=201)
+def create_ar_under_task(
+    task_ref: str,
+    body: ArCreate,
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> dict[str, Any]:
+    """Append a new `!AR` child line under an existing task.
+
+    Inserts the AR inside the parent's block (after any existing children
+    but before the next blank line / sibling), so the new AR inherits the
+    same parser section context — same project, same `@owner` frame — as
+    its parent.
+
+    RBAC: same as PATCH/DELETE — requester must own the parent task or be
+    a project manager / admin.  Pure project members who don't own the
+    parent task get 403.
+    """
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    # Strip a redundant leading bang token if the user typed the keyword
+    # explicitly (e.g. "!AR foo bar").  The line builder always prepends
+    # `!AR`, so without this we'd emit `!AR #id T-XXX !AR foo bar`.
+    # See issue #125.
+    low = title.lower()
+    if low.startswith("!ar "):
+        title = title[4:].strip()
+    elif low.startswith("!task "):
+        title = title[6:].strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+
+    parent = _resolve_task(task_ref, s)
+    note = s.get(Note, parent.note_id)
+    if not note:
+        raise HTTPException(404, "parent note not found")
+    project = _project_for_path(note.path)
+    role = _user_role_for_project(s, user, project)
+    parent_owners = s.exec(
+        select(User.name).join(TaskOwner, TaskOwner.user_id == User.id)
+        .where(TaskOwner.task_id == parent.id)
+    ).all()
+    is_owner = user in parent_owners
+    if role == "none" and not is_owner:
+        raise HTTPException(403, "no access to project")
+    if role != "manager" and not is_owner:
+        raise HTTPException(
+            403, "only the parent task's owner or a project manager can add an AR",
+        )
+
+    full = settings.notes_dir / note.path
+    parent_uuid = parent.task_uuid
+    parent_line = parent.line
+
+    # Default owner = requester (mirrors create_task), so the AR is attributed
+    # to whoever filed it rather than silently inheriting the parent's owner
+    # via section context.
+    owners = body.owners if body.owners is not None else [user]
+    cleaned_owners = [o.strip().lstrip("@") for o in owners if o and o.strip()]
+
+    with with_file_lock(full):
+        if not full.exists():
+            raise HTTPException(404, "parent note file not found on disk")
+        disk_md = full.read_text(encoding="utf-8")
+
+        # Re-anchor by parent #id when present — line numbers can shift if
+        # another writer touched the file between our cached parse and now.
+        anchor_line = parent_line
+        if parent_uuid:
+            for i, raw in enumerate(disk_md.splitlines()):
+                if f"#id {parent_uuid}" in raw:
+                    anchor_line = i
+                    break
+
+        ids = existing_ids(disk_md)
+        new_id = generate_task_id(ids)
+        body_line = _build_task_line(
+            kind="ar", task_id=new_id, title=title,
+            owners=cleaned_owners,
+            priority=body.priority, eta=body.eta,
+            features=body.features or [],
+        ).rstrip("\n")
+        new_md = insert_ar_under_task(disk_md, anchor_line, body_line)
+        if new_md == disk_md:
+            raise HTTPException(500, "AR insert produced no change")
+        _safe_write_unlocked(full, new_md, notes_dir=settings.notes_dir)
+    reindex_file(full, s)
+
+    created = s.exec(select(Task).where(Task.task_uuid == new_id)).first()
+    if created is None:
+        raise HTTPException(500, "AR created but not found in index — please refresh")
+    return _task_to_dict(s, created) | {"parent_task_uuid": parent_uuid}
+
 
 @router.post("/parse")
 def parse_preview(body: dict = Body(...)) -> dict[str, Any]:
@@ -1362,6 +1464,20 @@ def patch_task(
         md = replace_multi_attr(md, t.line, "feature", cleaned)
         changed = True
     if body.add_note is not None and body.add_note.strip():
+        # Guardrail: refuse note text that looks like a task / AR declaration.
+        # Persisting it as a `#note` continuation would silently lose the
+        # intended structure (the parser doesn't recognize `#note !AR ...`
+        # as a task line).  See issue #125.
+        for raw_line in body.add_note.splitlines():
+            stripped = raw_line.lstrip().lstrip("-*+ ").lstrip()
+            low = stripped.lower()
+            if low.startswith(("!ar ", "!ar\t", "!task ", "!task\t")) or low in {"!ar", "!task"}:
+                raise HTTPException(
+                    400,
+                    "note text starts with `!AR` or `!task` — that won't be "
+                    "recognized as a task. Use the dedicated 'Add an AR' "
+                    "field (POST /api/tasks/{ref}/ars) for action requests.",
+                )
         md = append_note(md, t.line, body.add_note)
         changed = True
     elif body.notes is not None:
