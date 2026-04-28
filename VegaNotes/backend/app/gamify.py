@@ -44,16 +44,21 @@ def record_event(
     meta: Optional[dict[str, Any]] = None,
     *,
     ts: Optional[datetime] = None,
-) -> None:
-    """Append one ActivityEvent for ``user_name``. Failure is swallowed.
+) -> list[str]:
+    """Append one ActivityEvent for ``user_name`` and run badge
+    recompute. Failure is swallowed.
 
     ``ref`` is a free-form subject identifier (task uuid, note path, …).
     ``meta`` is JSON-encoded into ``meta_json``.
+
+    Returns the list of badge keys newly awarded by this event (empty if
+    none — also empty on any internal failure, since gamification is
+    decoration, never a correctness concern).
     """
     try:
         u = s.exec(select(User).where(User.name == user_name)).first()
         if u is None or u.id is None:
-            return
+            return []
         ev = ActivityEvent(
             user_id=u.id,
             kind=kind,
@@ -63,8 +68,13 @@ def record_event(
         )
         s.add(ev)
         s.flush()
+        # Recompute badges on every event. Cheap (one user's events) and
+        # keeps awards close to the action that earned them.
+        from . import badges as _badges  # local import: avoid circular
+        return _badges.recompute_badges(s, u.id)
     except Exception:  # pragma: no cover - defensive
         log.exception("record_event failed (kind=%s ref=%s)", kind, ref)
+        return []
 
 
 def backfill(s: Session) -> dict[str, int]:

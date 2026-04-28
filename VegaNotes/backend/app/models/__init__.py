@@ -49,6 +49,10 @@ class User(SQLModel, table=True):
     saved_views_json: str = "[]"
     pass_hash: str = ""
     is_admin: bool = False
+    # IANA tz name (e.g. "America/Los_Angeles"). Used by gamification stats
+    # so streaks roll over at the user's local midnight, not UTC's. Empty
+    # string ≡ UTC (the historical default).
+    tz: str = ""
 
 
 class TaskOwner(SQLModel, table=True):
@@ -106,6 +110,16 @@ class ActivityEvent(SQLModel, table=True):
     # JSON blob with event-specific fields (e.g. {"from":"todo","to":"done"}).
     # Source-of-truth for badge logic; intentionally untyped.
     meta_json: str = ""
+
+
+class UserBadge(SQLModel, table=True):
+    """One row per (user, badge) award. Awarding is idempotent: the
+    composite uniqueness is enforced by an index in db.init_db so a
+    re-run of recompute_badges never double-awards."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    badge_key: str = Field(index=True)
+    awarded_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class ProjectMember(SQLModel, table=True):

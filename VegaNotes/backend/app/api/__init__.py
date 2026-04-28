@@ -1661,7 +1661,42 @@ def whoami(
     user: str = Depends(require_user),
 ) -> dict[str, Any]:
     u = s.exec(select(User).where(User.name == user)).first()
-    return {"name": user, "is_admin": bool(u and u.is_admin)}
+    return {
+        "name": user,
+        "is_admin": bool(u and u.is_admin),
+        "tz": (u.tz if u else "") or "UTC",
+    }
+
+
+class SetTzIn(BaseModel):
+    tz: str
+
+
+@router.patch("/me/tz")
+def set_my_tz(
+    body: SetTzIn,
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> dict[str, str]:
+    """Set this user's IANA timezone (e.g. 'America/Los_Angeles').
+
+    Used by gamification stats so streaks roll over at local midnight.
+    Empty string ≡ UTC. Unknown zones are rejected.
+    """
+    name = (body.tz or "").strip()
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(name)
+        except Exception:
+            raise HTTPException(400, f"unknown timezone: {name!r}")
+    u = s.exec(select(User).where(User.name == user)).first()
+    if u is None:
+        raise HTTPException(404, "user not found")
+    u.tz = name
+    s.add(u)
+    s.commit()
+    return {"status": "ok", "tz": name or "UTC"}
 
 
 class ChangePasswordIn(BaseModel):
@@ -1810,6 +1845,81 @@ def admin_gamify_backfill(
     counts = gamify.backfill(s)
     s.commit()
     return {"status": "ok", **counts}
+
+
+# ---------- gamification: per-user stats (read-only) ---------------------
+
+from .. import gamify_stats as _gstats  # noqa: E402  (after admin endpoint above)
+
+
+@router.get("/me/stats")
+def my_stats(
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> dict[str, Any]:
+    """Return the calling user's lifetime + windowed activity stats.
+
+    Privacy: hard-scoped to the caller; no ``user`` parameter. UTC dates
+    everywhere (per-user TZ is a future enhancement).
+    """
+    u = s.exec(select(User).where(User.name == user)).first()
+    if u is None or u.id is None:
+        raise HTTPException(404, "user not found")
+    return _gstats.compute_stats(s, u.id)
+
+
+@router.get("/me/streak")
+def my_streak(
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> dict[str, Any]:
+    """Compact streak summary — the same numbers ``/me/stats`` returns,
+    pulled out for callers (e.g. the CLI) that only want the headline.
+    """
+    u = s.exec(select(User).where(User.name == user)).first()
+    if u is None or u.id is None:
+        raise HTTPException(404, "user not found")
+    full = _gstats.compute_stats(s, u.id)
+    return {
+        "current_streak_days": full["current_streak_days"],
+        "longest_streak_days": full["longest_streak_days"],
+        "rest_tokens_remaining": full["rest_tokens_remaining"],
+        "as_of": full["as_of"],
+    }
+
+
+@router.get("/me/history")
+def my_history(
+    days: int = Query(30, ge=1, le=365),
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> list[dict[str, Any]]:
+    """Per-day close + note-edit counts for the trailing ``days`` window.
+
+    Powers the ANSI sparkline in ``vn me history``.
+    """
+    u = s.exec(select(User).where(User.name == user)).first()
+    if u is None or u.id is None:
+        raise HTTPException(404, "user not found")
+    return _gstats.compute_history(s, u.id, days=days)
+
+
+@router.get("/me/badges")
+def my_badges(
+    s: Session = Depends(get_session),
+    user: str = Depends(require_user),
+) -> dict[str, Any]:
+    """Earned + locked badges for the calling user.
+
+    Hidden badges are surfaced only after they're earned; until then
+    they're rolled into ``hidden_locked_count`` so users can see *that*
+    there's more without spoiling the catalog.
+    """
+    from .. import badges as _badges
+    u = s.exec(select(User).where(User.name == user)).first()
+    if u is None or u.id is None:
+        raise HTTPException(404, "user not found")
+    return _badges.list_badges(s, u.id)
 
 
 # ---------- admin: user management ----------------------------------------
