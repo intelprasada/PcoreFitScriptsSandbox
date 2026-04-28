@@ -166,6 +166,12 @@ export const api = {
     kind?: "task" | "ar";
   }) => req<Task & { note_path: string }>("/tasks", { method: "POST", body: JSON.stringify(body) }),
 
+  deleteTask: (ref: number | string) =>
+    req<{ status: string; task_uuid: string | null; title: string }>(
+      `/tasks/${ref}`,
+      { method: "DELETE" },
+    ),
+
   agenda: (owner?: string, days?: number, start?: string, end?: string) => {
     const qs = new URLSearchParams();
     if (days != null) qs.set("days", String(days));
