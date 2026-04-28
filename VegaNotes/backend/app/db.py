@@ -45,6 +45,9 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE user ADD COLUMN pass_hash TEXT NOT NULL DEFAULT ''"))
         if user_cols and "is_admin" not in user_cols:
             conn.execute(text("ALTER TABLE user ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0"))
+        if user_cols and "tz" not in user_cols:
+            # Per-user IANA TZ for gamification (Phase 3). Empty ≡ UTC.
+            conn.execute(text("ALTER TABLE user ADD COLUMN tz TEXT NOT NULL DEFAULT ''"))
         # Normalise legacy priority value_norm rows: old indexer stored 'p0'-'p3'
         # as the value_norm; new indexer stores the integer rank ('0'-'3').
         # Re-write any non-numeric priority value_norm to the integer rank.
@@ -73,6 +76,11 @@ def init_db() -> None:
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_activityevent_user_ts "
             "ON activityevent(user_id, ts);"
+        ))
+        # Idempotency guard for badge awards: one (user, badge) row max.
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_userbadge_user_key "
+            "ON userbadge(user_id, badge_key);"
         ))
         # Bidirectional view over `link` (treats every edge as undirected).
         conn.execute(text(
