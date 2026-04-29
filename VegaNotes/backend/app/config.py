@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,6 +28,12 @@ class Settings(BaseSettings):
 
     # Token vocab override (loaded from ConfigMap as JSON if present)
     token_vocab: dict[str, Any] = Field(default_factory=dict)
+
+    # File watcher tuning (#150).  ``None`` for force_polling means
+    # auto-detect: enable polling when notes_dir lives on a filesystem that
+    # doesn't deliver inotify events (NFS, SMB, FUSE network mounts).
+    watcher_force_polling: Optional[bool] = None
+    watcher_poll_delay_ms: int = 2000
 
     @property
     def notes_dir(self) -> Path:
