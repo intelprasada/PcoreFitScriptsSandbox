@@ -11,7 +11,7 @@ import hashlib
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from sqlalchemy import text
 from sqlmodel import Session, select
@@ -742,13 +742,97 @@ def list_md_files() -> Iterable[Path]:
     return sorted(settings.notes_dir.rglob("*.md"))
 
 
+# --- watcher (#150) -------------------------------------------------------
+#
+# Module-level state populated by ``watch_loop``.  Exposed via
+# ``GET /api/admin/watcher_status`` so operators can confirm the watcher is
+# alive and which mode it picked (event vs polling).  See #150 for the NFS
+# silence bug that motivated this.
+WATCHER_STATE: dict = {
+    "started_at": None,
+    "last_event_at": None,
+    "events_total": 0,
+    "errors_total": 0,
+    "mode": None,         # "event" | "polling"
+    "fs_type": None,      # detected via /proc/mounts (best-effort)
+    "notes_dir": None,
+    "force_polling": None,
+    "poll_delay_ms": None,
+}
+
+# Filesystems that do not deliver inotify events for off-host writes and
+# therefore require polling for ``watch_loop`` to be useful.
+_POLLING_FS_TYPES = frozenset({
+    "nfs", "nfs3", "nfs4", "nfsv3", "nfsv4",
+    "cifs", "smb", "smb2", "smb3", "smbfs",
+    "fuse.sshfs", "fuse.davfs", "fuse.s3fs", "fuse.gcsfuse",
+})
+
+
+def _detect_fs_type(path: Path, mounts_file: str = "/proc/mounts") -> Optional[str]:
+    """Return the kernel filesystem type for *path* by scanning /proc/mounts.
+
+    Picks the longest mountpoint prefix that contains *path*.  Returns
+    ``None`` on any error so callers fall back to safe defaults.
+    """
+    try:
+        target = str(Path(path).resolve())
+        with open(mounts_file, "r", encoding="utf-8", errors="replace") as fh:
+            best = ("", None)  # (mountpoint, fstype)
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mp = parts[1]
+                fstype = parts[2]
+                if (target == mp or target.startswith(mp.rstrip("/") + "/")) \
+                        and len(mp) > len(best[0]):
+                    best = (mp, fstype)
+            return best[1]
+    except Exception:
+        return None
+
+
+def _compute_force_polling(notes_dir: Path) -> tuple[bool, Optional[str]]:
+    """Return ``(force_polling, fs_type)``.
+
+    Honours the explicit ``settings.watcher_force_polling`` toggle when set;
+    otherwise auto-enables polling on filesystems known to drop inotify
+    events (NFS, CIFS, network FUSE).
+    """
+    fs_type = _detect_fs_type(notes_dir)
+    if settings.watcher_force_polling is not None:
+        return bool(settings.watcher_force_polling), fs_type
+    return (fs_type or "").lower() in _POLLING_FS_TYPES, fs_type
+
+
 async def watch_loop() -> None:
     """Background task: watch notes_dir and reindex on change."""
     from watchfiles import Change, awatch
 
     init_db()
-    log.info("Indexer watching %s", settings.notes_dir)
-    async for changes in awatch(settings.notes_dir):
+    force_polling, fs_type = _compute_force_polling(settings.notes_dir)
+    poll_delay_ms = int(settings.watcher_poll_delay_ms)
+    mode = "polling" if force_polling else "event"
+
+    WATCHER_STATE.update({
+        "started_at": _utcnow_iso(),
+        "mode": mode,
+        "fs_type": fs_type,
+        "notes_dir": str(settings.notes_dir),
+        "force_polling": force_polling,
+        "poll_delay_ms": poll_delay_ms,
+    })
+    log.info(
+        "Indexer watching %s (mode=%s fs=%s poll_delay_ms=%d)",
+        settings.notes_dir, mode, fs_type, poll_delay_ms,
+    )
+
+    async for changes in awatch(
+        settings.notes_dir,
+        force_polling=force_polling,
+        poll_delay_ms=poll_delay_ms,
+    ):
         from ..db import session_scope
         with session_scope() as s:
             for change, p in changes:
@@ -765,5 +849,12 @@ async def watch_loop() -> None:
                     try:
                         reindex_file(path, s)
                     except Exception:
+                        WATCHER_STATE["errors_total"] += 1
                         log.exception("reindex failed for %s", path)
+                WATCHER_STATE["events_total"] += 1
+                WATCHER_STATE["last_event_at"] = _utcnow_iso()
         await asyncio.sleep(0)  # cooperative
+
+
+def _utcnow_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
