@@ -19,12 +19,16 @@
   /* Editor (textarea + mirrored highlight overlay).
      CRITICAL for cursor-vs-display alignment:
        - both panes share font, line-height, tab-size, padding, box-sizing
+       - NO soft-wrap.  textarea wrap algorithm and CSS pre-wrap differ on
+         long lines / mixed-width tokens by 1+ columns; once they diverge,
+         the caret floats off the visible glyph.  So both panes use
+         white-space: pre and long lines scroll horizontally (#155).
        - mirror never grows its own scrollbar; textarea drives scroll
-         and JS syncs scrollTop/scrollLeft (#154)
+         and JS syncs scrollTop/scrollLeft (#154/#155)
        - scrollbar-gutter: stable keeps both content-widths identical
-         whether or not the scrollbar is visible (#154)
-       - no per-token font-size / font-weight differences -- in monospace
-         a bold or shrunken token would shift wrap columns (#154) */
+         whether or not the scrollbar is visible
+       - no per-token font-size differences -- a shrunken/grown chip
+         would shift glyph columns against the (uniform-size) textarea */
   .vega-editor-wrap { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 4; }
   .vega-editor-pre, .vega-editor-ta {
     font: inherit;
@@ -33,8 +37,9 @@
     color: #0f172a; /* slate-900 */
     box-sizing: border-box;
     scrollbar-gutter: stable;
+    white-space: pre;          /* no wrap -- horizontal scroll instead */
     word-break: normal;
-    overflow-wrap: break-word;
+    overflow-wrap: normal;
   }
   .vega-editor-pre {
     color: #0f172a;
