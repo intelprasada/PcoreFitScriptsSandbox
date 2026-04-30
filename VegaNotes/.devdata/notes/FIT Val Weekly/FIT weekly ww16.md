@@ -108,10 +108,9 @@
 		!task #id T-CS2X6C JNC bucket debug 
 			!AR #id T-PC96Y9 ITLB cache miss bucket debug #status done. 
 			!AR #id T-V5ZQCR ITLB MT1 enablement 3 issues #status done 
-			!AR #id T-RXKF7Q ITLB msid mini EID: 1696677 , TXTE_MSG_FILL_BUFFER_OUT_FillBufUBit_mismatch #status done
-				#eta ww17
+			!AR #id T-RXKF7Q ITLB msid mini EID: 1696677 , TXTE_MSG_FILL_BUFFER_OUT_FillBufUBit_mismatch 
+				#eta ww17 #status wip 
 				#note fix in GFC, waiting for sync
-			!AR #id T-M2TRKN TXTE_MSG_TLB_LOOKUP_OUT_ItCacheableM122H_mismatch @Ragavi #status done
 		!task #id T-3CF48M ITLB preloader SMT coding and smart preloader 
 			!AR #id T-WZW8XS smt coding #status done 
 			!AR #id T-022MGA smart preloader #status wip #eta ww18.4 
@@ -123,7 +122,7 @@
 		!task #id T-NWXAKW Validation plan for SMT ITLB #eta ww21 #priority high 
 			!AR #id T-RDJYHX Internal review for val plan #eta ww20 
 		!task #id T-2953KW Snoop injector  SMT coding #eta ww19 
-			!AR #id T-XN2WQY further breakdown of tasks #eta ww18.2 #status done
+			!AR #id T-XN2WQY further breakdown of tasks #eta ww18.2 
 			!AR #id T-6XJAS5 Coding done #eta ww18
 			!AR #id T-R4HWHC Integration done #eta ww19
 
@@ -134,18 +133,13 @@
 			!AR #id T-PZQ4CK updated code to handle threads @Gautham #status done
 			!AR #id T-4SPN38 add missing signals to packet @Gautham #status in-progress
 			!AR #id T-ZVSM2W verify cover groups collected @Gautham #status in-progress
-			!AR #id T-VFRC9F turn in without thread-aware 148h signals @Gautham
 		!task #id T-D3K2BP predq tracker #status wip #eta ww18
 			!AR #id T-S3B7ZW created yaml packet, tlm infrastructure and tracker @Gautham #status done
 			!AR #id T-D6JB94 verified cycle accuracy of packet signals @Gautham #status done
-			!AR #id T-RZBY17 review and update with corrected signals and columns @Gautham #status in-progress
 		!task #id T-VREJ1D updating coverage for fe_ifu_tlm_cov.e for SMT #status wip 
 			!AR #id T-4FEBGG verify covers being hit for smt_core_gating.list @Gautham #status in-progress
 			!AR #id T-31QEAV coded thread scoping @Gautham #status done
 			!AR #id T-GKDB9P verify if threads are being differentiated with core_gaitng.list @Gautham #status done
-			!AR #id T-Q1S4R7 revise val plan with thread-aware signals @Gautham
-			!AR #id T-XTFDVA verify rtl signal names from .vs file @Gautham
-			!AR #id T-1ZDG4T add additional coverage for SMT @Gautham
 		!task #id T-TSRF81 IDQ Ramp up #status wip 
 			!AR #id T-Q2F4T2 LSD, BIQ checker #eta ww18
 @Yongxi
