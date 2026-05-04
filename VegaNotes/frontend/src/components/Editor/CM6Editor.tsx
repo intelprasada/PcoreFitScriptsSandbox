@@ -17,7 +17,26 @@ import {
   indentWithTab,
 } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+import { vim, Vim } from "@replit/codemirror-vim";
+import { useEditorPrefs } from "../../store/editorPrefs";
 import type { EditorHostProps } from "./types";
+
+// Module-level latch: only register :w → host save once, no matter how
+// many CM6Editor instances mount.  Lives here (not inside the component)
+// because Vim.defineEx mutates global vim state.
+let vimSaveBound = false;
+let pendingSaveRef: { current: (() => void) | undefined } | undefined;
+function ensureVimSaveBinding(saveRef: { current: (() => void) | undefined }) {
+  pendingSaveRef = saveRef;
+  if (vimSaveBound) return;
+  vimSaveBound = true;
+  // :w / :write → host requestSave (so the existing flushSave path runs).
+  // Keep the existing Mod-s keybinding too — vim users often muscle-memory
+  // both.  pendingSaveRef is rebound on every mount to the latest editor
+  // instance's requestSave callback.
+  Vim.defineEx("write", "w", () => { pendingSaveRef?.current?.(); });
+  Vim.defineEx("update", "up", () => { pendingSaveRef?.current?.(); });
+}
 
 /**
  * CodeMirror 6 prototype editor (#164 / umbrella #162).
@@ -61,10 +80,20 @@ export function CM6Editor({
   const onDirtyRef = useRef(onDirtyChange);
   const externalValueRef = useRef(value);
   const readOnlyCompartment = useRef(new Compartment());
+  const vimCompartment = useRef(new Compartment());
+
+  // Read vim flag from the editor-prefs store; toggling it via the
+  // `Vim` chip in EditorFlavorTabs reconfigures the compartment without
+  // remounting the editor (so the doc, history, and selection survive).
+  const vimEnabled = useEditorPrefs((s) => s.vim);
 
   onChangeRef.current = onChange;
   requestSaveRef.current = requestSave;
   onDirtyRef.current = onDirtyChange;
+
+  // Bind :w / :update once globally; rebinds the latest requestSave ref
+  // on every mount so the most recently-mounted editor handles the save.
+  ensureVimSaveBinding(requestSaveRef);
 
   useEffect(() => {
     if (!hostRef.current || viewRef.current) return;
@@ -90,6 +119,11 @@ export function CM6Editor({
     const state = EditorState.create({
       doc: value,
       extensions: [
+        // vim() must come BEFORE other keymaps so it can intercept Esc /
+        // hjkl / : etc. before defaultKeymap consumes them.  Toggled via
+        // a Compartment so the user can flip it on/off without losing
+        // the current document state (#168).
+        vimCompartment.current.of(vimEnabled ? vim() : []),
         lineNumbers(),
         highlightActiveLineGutter(),
         history(),
@@ -117,6 +151,16 @@ export function CM6Editor({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // mount once; subsequent prop changes handled by dedicated effects
+
+  // Toggle vim extension via Compartment.  No re-mount; doc + history +
+  // selection all survive the toggle.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: vimCompartment.current.reconfigure(vimEnabled ? vim() : []),
+    });
+  }, [vimEnabled]);
 
   // External value change → reconcile only when it really differs from
   // what's in the editor right now (prevents NFS-watcher reload from
