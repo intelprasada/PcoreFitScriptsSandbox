@@ -18,7 +18,7 @@ import {
   indentWithTab,
 } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import { vim, Vim } from "@replit/codemirror-vim";
+import { vim, Vim, getCM } from "@replit/codemirror-vim";
 import { useEditorPrefs } from "../../store/editorPrefs";
 import type { EditorHostProps } from "./types";
 
@@ -131,6 +131,25 @@ export function CM6Editor({
         // native browser one) — required for vim's visual-block (Ctrl-v)
         // rectangular selection to render across multiple lines.
         drawSelection(),
+        // Ctrl-v fires BOTH a keydown (which vim handles → visual block)
+        // AND a separate paste DOM event.  The vim package's paste hook
+        // unconditionally drops you into insert mode, cancelling the
+        // visual-block selection.  Suppress paste when vim owns the
+        // editor and we're not actually in insert mode.
+        EditorView.domEventHandlers({
+          paste(_event, view) {
+            const cm = getCM(view);
+            if (!cm) return false;
+            // cm.state.vim is set by the vim extension; insertMode flag
+            // tells us whether the user really wants a paste.
+            const vimState = (cm.state as { vim?: { insertMode?: boolean } }).vim;
+            if (vimState && !vimState.insertMode) {
+              _event.preventDefault();
+              return true;
+            }
+            return false;
+          },
+        }),
         history(),
         highlightActiveLine(),
         highlightSelectionMatches(),
